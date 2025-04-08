@@ -28,6 +28,9 @@ test:
 test-verbose:
 	pytest -v
 
+verify:
+	python3 verify_regular_query.py
+
 # Format code with black
 format:
 	black .
