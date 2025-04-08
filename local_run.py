@@ -28,12 +28,6 @@ def main():
         default=config["reload"],
         help="Enable auto-reload",
     )
-    parser.add_argument(
-        "--token",
-        type=str,
-        default=os.getenv("POE_API_KEY", ""),
-        help="Set the server token",
-    )
 
     args = parser.parse_args()
 
@@ -42,8 +36,6 @@ def main():
     print(
         f"API documentation available at: http://{config['host']}:{config['port']}/docs"
     )
-
-    os.environ["POE_API_KEY"] = args.token
 
     uvicorn.run(
         "server:app",
