@@ -1,3 +1,4 @@
+
 import pytest
 from fastapi.testclient import TestClient
 from server import app, fp, normalize_model, normalize_role, models, models_mapping
@@ -21,42 +22,6 @@ def mock_get_bot_response():
     with patch('server.get_bot_response', mock_response):
         yield mock_response
 
-def test_chat_endpoint(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [
-            {"role": "user", "content": "Hello"}
-        ],
-        "stream": False
-    }
-    
-    response = client.post("/api/chat", json=request_data, headers=headers)
-    assert response.status_code == 200
-    
-    data = response.json()
-    assert "response" in data
-    assert "message" in data
-    assert data["done"] is True
-    assert data["message"]["role"] == "assistant"
-    assert data["message"]["content"] == "Test response"
-
-def test_generate_endpoint(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "prompt": "Hello",
-        "stream": False
-    }
-    
-    response = client.post("/api/generate", json=request_data, headers=headers)
-    assert response.status_code == 200
-    
-    data = response.json()
-    assert "response" in data
-    assert data["done"] is True
-    assert data["response"].get("content") == "Test response"
-
 def test_missing_auth(client):
     request_data = {
         "model": "Claude-3.5-Sonnet",
@@ -65,23 +30,8 @@ def test_missing_auth(client):
         ]
     }
     
-    response = client.post("/api/chat", json=request_data)
+    response = client.post("/v1/chat/completions", json=request_data)
     assert response.status_code == 401
-
-def test_list_models(client):
-    response = client.get("/api/tags")
-    assert response.status_code == 200
-    
-    data = response.json()
-    assert "models" in data
-    assert isinstance(data["models"], list)
-    assert len(data["models"]) > 0
-    
-    model = data["models"][0]
-    assert "name" in model
-    assert "id" in model
-    assert "created_at" in model
-    assert "description" in model
 
 def test_normalize_model():
     # Test exact match
@@ -359,16 +309,6 @@ def test_token_counts_in_response(client, mock_get_bot_response):
         ],
         "stream": False
     }
-    
-    # Test chat API
-    response = client.post("/api/chat", json=request_data, headers=headers)
-    assert response.status_code == 200
-    data = response.json()
-    assert "usage" in data
-    assert "prompt_tokens" in data["usage"]
-    assert "completion_tokens" in data["usage"]
-    assert "total_tokens" in data["usage"]
-    assert data["usage"]["total_tokens"] == data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
     
     # Test chat completions API
     response = client.post("/v1/chat/completions", json=request_data, headers=headers)

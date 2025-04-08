@@ -6,8 +6,6 @@ from fastapi import FastAPI, BackgroundTasks, Request, Response, HTTPException, 
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.security.http import HTTPBase
-from fastapi.openapi.models import HTTPBearer as HTTPBearerModel
 import httpx
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Union
@@ -84,21 +82,17 @@ models_mapping = {
 }
 
 class ChatMessage(BaseModel):
-    role: str # role: the role of the message, either system, user, assistant, or tool
+    role: str # role: the role of the message, either system, user, or assistant
     content: str
 
 class ChatCompletionMessage(BaseModel):
     role: str
-    content: Optional[Any] = None  # Can be None when using tools
-    name: Optional[str] = None  # For tool messages
-    tool_calls: Optional[List[Dict[str, Any]]] = None  # For assistant messages with tool calls
-    tool_call_id: Optional[str] = None  # For tool messages
+    content: Optional[Any] = None
+    name: Optional[str] = None
 
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatCompletionMessage]
-    tools: Optional[List[Dict[str, Any]]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
     seed: Optional[int] = None
@@ -180,92 +174,43 @@ def normalize_model(model: str):
 
     return models[model_index]
 
-class FlexibleHTTPBearer(HTTPBase):
-    def __init__(
-        self,
-        *,
-        bearerFormat: Optional[str] = None,
-        scheme_name: Optional[str] = None,
-        description: Optional[str] = None,
-        auto_error: bool = True,
-    ):
-        self.model = HTTPBearerModel(bearerFormat=bearerFormat, description=description)
-        self.scheme_name = scheme_name or self.__class__.__name__
-        self.auto_error = auto_error
-
-    async def __call__(
-        self, request: Request
-    ) -> Optional[HTTPAuthorizationCredentials]:
-        # Get token from different sources with minimal logging
-        token = request.query_params.get("token")
-        if token:
-            return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-        
-        if os.getenv('POE_API_KEY', ''):
-            return HTTPAuthorizationCredentials(scheme="Bearer", credentials=os.environ['POE_API_KEY'])
-            
-        # Then check authorization header
+# Custom HTTP Bearer authentication that returns 401 like OpenAI
+class CustomHTTPBearer(HTTPBearer):
+    async def __call__(self, request: Request) -> Optional[HTTPAuthorizationCredentials]:
         authorization = request.headers.get("Authorization")
         if not authorization:
-            if self.auto_error:
-                error = {
-                    "error": {
-                        "message": "Authentication error: No token provided - please include an Authorization header with 'Bearer YOUR_TOKEN' or add a 'token' URL parameter",
-                        "type": "authentication_error",
-                        "help": "Set a POE_API_KEY environment variable or include a valid token in your request"
-                    }
-                }
-                raise HTTPException(status_code=401, detail=error,
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            else:
-                return None
+            raise HTTPException(
+                status_code=401,
+                detail={"error": {"message": "Authentication error: No token provided", "type": "authentication_error"}},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
             
         try:
             scheme, credentials = authorization.split()
             if scheme.lower() != "bearer":
-                if self.auto_error:
-                    error = {
-                        "error": {
-                            "message": f"Authentication error: Invalid scheme '{scheme}' - must be 'Bearer'",
-                            "type": "authentication_error",
-                            "help": "Format should be: Authorization: Bearer YOUR_TOKEN"
-                        }
-                    }
-                    raise HTTPException(status_code=401, detail=error,
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-                else:
-                    return None
-        except ValueError:
-            if self.auto_error:
-                error = {
-                    "error": {
-                        "message": "Authentication error: Malformed Authorization header - missing space between scheme and token",
-                        "type": "authentication_error",
-                        "help": "Format should be: Authorization: Bearer YOUR_TOKEN"
-                    }
-                }
-                raise HTTPException(status_code=401, detail=error,
+                raise HTTPException(
+                    status_code=401,
+                    detail={"error": {"message": f"Authentication error: Invalid scheme '{scheme}' - must be 'Bearer'", "type": "authentication_error"}},
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            else:
-                return None
+        except ValueError:
+            raise HTTPException(
+                status_code=401,
+                detail={"error": {"message": "Authentication error: Malformed Authorization header", "type": "authentication_error"}},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
                 
         return HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials)
 
-security = FlexibleHTTPBearer()
+security = CustomHTTPBearer(
+    bearerFormat="Bearer",
+    description="Your API key"
+)
 
 async def get_api_key(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    """Extracts and validates the API key from either the authorization header or URL parameter"""
-    if not credentials:
-        raise HTTPException(
-            status_code=401, 
-            detail={"error": {"message": "Missing authentication: provide either 'authorization' header or 'token' URL parameter", "type": "authentication_error"}}
-        )
-    
+    """Extracts and validates the API key from the authorization header"""
     return credentials.credentials
 
 def normalize_role(role: str):
@@ -325,58 +270,6 @@ async def chat_completions(request: ChatCompletionRequest, api_key: str = Depend
     request_id = os.urandom(4).hex()
     logger.info(f"[{request_id}] Processing chat completion request for model: {request.model}")
     
-    def format_tool_calls(tools, tool_choice):
-        if not tools:
-            return None
-
-        if tool_choice == "none":
-            return None
-            
-        if tool_choice == "auto":
-            # Let the model decide which tool to use
-            tool_instructions = """You must use one of the available functions when appropriate by outputting a JSON object in the following format:
-```json
-{
-    "name": "function_name",
-    "arguments": {
-        "param1": "value1",
-        "param2": "value2"
-    }
-}
-```
-
-Available functions:
-"""
-            for tool in tools:
-                if "function" not in tool:
-                    continue
-                func = tool["function"]
-                tool_instructions += f"\n{func['name']}: {func['description']}\n"
-                if "parameters" in func:
-                    tool_instructions += f"Parameters: {json.dumps(func['parameters'], indent=2)}\n"
-                tool_instructions += "\n"
-            
-            tool_instructions += "\nRespond in a conversational way, but when you need to call a function, make sure to use the exact JSON format shown above."
-            tool_instructions += "\nIf multiple items are mentioned (like multiple cities), make separate function calls for each one."
-            return tool_instructions
-
-        if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
-            # Force the model to use the specified function
-            function_name = tool_choice["function"]["name"]
-            matching_tool = next((t for t in tools if t["function"]["name"] == function_name), None)
-            if matching_tool:
-                return f"Use the function {function_name} with the following specification:\n{json.dumps(matching_tool['function'])}"
-            else:
-                error = {
-                    "error": {
-                        "message": f"Function '{function_name}' not found in provided tools",
-                        "type": "invalid_request_error",
-                        "param": "tool_choice"}}
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": {"message": f"Function {function_name} not found in provided tools", "type": "invalid_request_error"}}
-                )
-        return None
 
     try:
         # Prepare messages for the API call
@@ -386,13 +279,6 @@ Available functions:
             
             content = msg.content or ""
 
-            if msg.role == "tool" and msg.tool_call_id:
-                content = json.dumps({
-                    "tool_call_id": msg.tool_call_id or "",
-                    "name": getattr(msg, "name", ""),
-                    "result": content if isinstance(msg.content, dict) else json.loads(content)
-                }, indent=2)
-                role = "user"
 
             if isinstance(content, list):
                 # Join list elements into a single string
@@ -407,21 +293,6 @@ Available functions:
 
             messages.append(fp.ProtocolMessage(role=role, content=content))
 
-        # Handle tools and tool_choice
-        if request.tools:
-            tool_instructions = format_tool_calls(request.tools, request.tool_choice or "auto")
-            
-            # Check if this is a follow-up after tool calls
-            has_tool_responses = any(
-                isinstance(msg, ChatCompletionMessage) and msg.role == "tool"
-                for msg in request.messages
-            )
-            
-            if has_tool_responses:
-                messages.append(fp.ProtocolMessage(role="system", content="Please provide a natural response using the tool results above."))
-            elif tool_instructions:
-                messages.append(fp.ProtocolMessage(role="user", 
-                    content=tool_instructions))
 
         # If streaming is requested, use StreamingResponse
         if request.stream:
@@ -447,64 +318,8 @@ Available functions:
         token_counts["completion_tokens"] = response_tokens
         token_counts["total_tokens"] = token_counts["prompt_tokens"] + response_tokens
 
-        # Try to parse tool calls from the response if tools were provided
-        tool_calls = None
+        # Set finish reason to stop
         finish_reason = "stop"
-        if request.tools and response.get("content"):
-            def extract_tool_calls(content):
-                # Look for function call format in the response
-                content = response["content"]
-                json_strings = []
-                
-                # Try to extract JSON from code blocks first
-                if content:
-                    import re
-                    # Try to find JSON blocks
-                    if "```json" in content:
-                        json_blocks = content.split("```json")
-                        for block in json_blocks[1:]:  # Skip first split which is before first ```json
-                            json_strings.append(block.split("```")[0].strip())
-                    elif "```" in content:
-                        # Try other code blocks
-                        code_blocks = content.split("```")
-                        for i in range(1, len(code_blocks), 2):  # Get content of each code block
-                            if code_blocks[i].strip():
-                                json_strings.append(code_blocks[i].strip())
-                    
-                    # Look for { ... } patterns if no code blocks found
-                    if not json_strings:
-                        # Non-recursive pattern for JSON objects
-                        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-                        json_matches = re.findall(json_pattern, content)
-                        json_strings.extend(json_matches)
-                
-                extracted_calls = []
-                for json_str in json_strings:
-                    try:
-                        tool_data = json.loads(json_str)
-                        # Handle both single tool call and array of tool calls
-                        if isinstance(tool_data, list):
-                            tool_list = tool_data
-                        else:
-                            tool_list = [tool_data]
-                            
-                        for tool in tool_list:
-                            if isinstance(tool, dict) and "name" in tool and "arguments" in tool:
-                                extracted_calls.append({
-                                    "id": f"call_{os.urandom(8).hex()}",
-                                    "type": "function",
-                                    "function": tool
-                                })
-                    except json.JSONDecodeError:
-                        continue
-                return extracted_calls
-
-            try:
-                tool_calls = extract_tool_calls(response.get("content"))
-                if tool_calls:
-                    finish_reason = "tool_calls"
-            except Exception as e:
-                print(f"Error parsing tool calls: {str(e)}")
         
         completion_response = {
             "id": "chatcmpl-" + os.urandom(12).hex(),
@@ -516,8 +331,7 @@ Available functions:
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": response.get("content") if not tool_calls else None,
-                    **({"tool_calls": tool_calls} if tool_calls else {})
+                    "content": response.get("content")
                 },
                 "finish_reason": finish_reason
             }],
@@ -676,18 +490,6 @@ async def create_stream_chunk(message_text: str, model: str, format_type: str, i
                 },
                 "finish_reason": None,
                 "logprobs": None
-            }]
-        }
-    elif format_type == "tool":
-        return {
-            "id": f"chatcmpl-{chunk_id}",
-            "object": "chat.completion.chunk",
-            "created": timestamp,
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {"tool_calls": [message_text]},
-                "finish_reason": None
             }]
         }
     else:  # poe format
@@ -892,9 +694,11 @@ async def root():
                 "/v1/chat/completions",
                 "/v1/completions",
                 "/v1/models"
-            ]
+            ],
+            "Poe-compatible": []
         }
     }
+
 
 @app.get("/api/auth/check")
 async def check_auth(api_key: str = Depends(get_api_key)):
@@ -993,12 +797,6 @@ async def generate_poe_bot_response(model, messages: list[fp.ProtocolMessage], a
         raise
 
     return response
-
-async def stream_poe_response(model, messages: list[fp.ProtocolMessage], api_key: str):
-    # Transform the stream to ensure usage stats are properly formatted for Poe format
-    async for chunk in stream_response(model, messages, api_key, "poe"):
-        # For Poe format, we pass through the chunks as-is
-        yield chunk
 
 async def stream_openai_format(model: str, messages: list[fp.ProtocolMessage], api_key: str):
     async for chunk in stream_response(model, messages, api_key, "chat"):

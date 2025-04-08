@@ -40,8 +40,3 @@ ENV/
 .vscode/
 .idea/
 /.env
-
-# Project specific files that don't need to be tracked
-__init__.py
-setup.py
-pyproject.toml 
