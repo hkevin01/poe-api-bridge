@@ -1,24 +1,26 @@
+# Standard library imports
 import asyncio
-from collections.abc import AsyncGenerator, Callable
-import os
-import logging
-from fastapi import FastAPI, BackgroundTasks, Request, Response, HTTPException, Depends, Query
-from datetime import datetime
-from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import httpx
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, Union
 import json
-import fastapi_poe as fp
+import logging
+import os
 import time
-from pathlib import Path
-from fastapi.middleware.cors import CORSMiddleware
+from collections.abc import AsyncGenerator, Callable
+from datetime import datetime
 from functools import wraps
-from fastapi_poe.client import get_bot_response
-from fastapi.openapi.utils import get_openapi
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+# Third-party imports
+import fastapi_poe as fp
+import httpx
 import tiktoken
-from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi_poe.client import get_bot_response
+from pydantic import BaseModel, Field
 
 # Configure logging
 logging.basicConfig(
@@ -223,6 +225,61 @@ def normalize_role(role: str):
     else:
         return role
 
+def parse_poe_error(error: Exception) -> tuple[str, dict, str, str]:
+    """
+    Parse error information from Poe API errors.
+    
+    Returns a tuple of:
+        - Error message
+        - Error data (JSON object or None)
+        - Error type
+        - Error ID (if available)
+    """
+    error_message = str(error)
+    error_data = None
+    error_type = "server_error"
+    error_id = None
+    
+    try:
+        error_str = str(error)
+        
+        # Case 1: Error is a JSON object string
+        if error_str.startswith('{') and error_str.endswith('}'):
+            error_data = json.loads(error_str)
+            error_message = error_data.get('text', error_str)
+            error_type = "poe_api_error"
+            
+        # Case 2: Error is BotError format with embedded JSON
+        elif "BotError('" in error_str and "')" in error_str:
+            json_part = error_str.split("BotError('", 1)[1].rsplit("')", 1)[0]
+            try:
+                error_data = json.loads(json_part)
+                error_message = error_data.get('text', error_str)
+                error_type = "poe_api_error"
+            except json.JSONDecodeError:
+                pass
+        
+        # Extract error_id if available
+        if 'error_id:' in error_message:
+            try:
+                error_id = error_message.split('error_id:', 1)[1].strip().rstrip(')')
+            except Exception:
+                pass
+                
+        # Determine error type based on message content
+        if isinstance(error, ValueError) and "Model" in error_str:
+            error_type = "model_not_found"
+        elif "Internal server error" in error_message:
+            error_type = "poe_server_error"
+            
+    except json.JSONDecodeError:
+        pass
+    except Exception:
+        # If any unexpected error occurs during parsing, use the original error message
+        pass
+        
+    return error_message, error_data, error_type, error_id
+
 def count_tokens(text: str, model: str = None) -> int:
     """Count the number of tokens in a string using the tiktoken library
     
@@ -378,38 +435,22 @@ async def chat_completions(request: ChatCompletionRequest, api_key: str = Depend
                 status_code = 400
                 error_type = "invalid_request_error"
         else:
-            # Try to extract error information from string
-            try:
-                error_str = str(e)
-                if "BotError('" in error_str and "')" in error_str:
-                    json_part = error_str.split("BotError('", 1)[1].rsplit("')", 1)[0]
-                    try:
-                        error_data = json.loads(json_part)
-                        error_message = error_data.get('text', str(e))
-                        error_type = "poe_api_error"
-                        
-                        error_detail = {
-                            "error": {
-                                "message": error_message,
-                                "type": error_type,
-                                "poe_error": error_data
-                            }
-                        }
-                        
-                        # Extract error_id if available in the message
-                        error_id = None
-                        if 'error_id:' in error_message:
-                            try:
-                                error_id = error_message.split('error_id:', 1)[1].strip().rstrip(')')
-                                error_detail["error"]["error_id"] = error_id
-                            except Exception:
-                                pass
-                                
-                        raise HTTPException(status_code=status_code, detail=error_detail)
-                    except json.JSONDecodeError:
-                        pass
-            except Exception:
-                pass
+            # Use the helper function to parse error information
+            error_message, error_data, error_type, error_id = parse_poe_error(e)
+            
+            if error_data:
+                error_detail = {
+                    "error": {
+                        "message": error_message,
+                        "type": error_type,
+                        "poe_error": error_data
+                    }
+                }
+                
+                if error_id:
+                    error_detail["error"]["error_id"] = error_id
+                    
+                raise HTTPException(status_code=status_code, detail=error_detail)
         
         # Default error response
         raise HTTPException(
@@ -580,36 +621,9 @@ async def stream_response(model: str, messages: list[fp.ProtocolMessage], api_ke
             
     except Exception as e:
         logger.exception(f"Stream error: {str(e)}")
-        error_type = "invalid_request_error"
-        error_message = str(e)
-        error_id = None
         
-        # Try to extract error details from Poe API errors
-        try:
-            if isinstance(e, Exception) and str(e):
-                error_str = str(e)
-                # Check if the error is JSON formatted
-                if error_str.startswith('{') and error_str.endswith('}'):
-                    error_data = json.loads(error_str)
-                    error_message = error_data.get('text', str(e))
-                    error_type = "poe_api_error"
-                # Handle BotError format
-                elif "BotError('" in error_str and "')" in error_str:
-                    json_part = error_str.split("BotError('", 1)[1].rsplit("')", 1)[0]
-                    try:
-                        error_data = json.loads(json_part)
-                        error_message = error_data.get('text', str(e))
-                        error_type = "poe_api_error"
-                    except json.JSONDecodeError:
-                        pass
-        except json.JSONDecodeError:
-            pass
-            
-        # Determine error type based on the exception or error message
-        if isinstance(e, ValueError) and "Model" in str(e):
-            error_type = "model_not_found"
-        elif "Internal server error" in error_message:
-            error_type = "poe_server_error"
+        # Use the helper function to parse error information
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
         
         # Add token counts to error response if available
         if accumulated_response:
@@ -750,48 +764,15 @@ async def generate_poe_bot_response(model, messages: list[fp.ProtocolMessage], a
 
     except Exception as e:
         logger.exception(f"[{request_id}] Error: {str(e)}")
-        # Try to parse the error message to extract structured Poe error data
-        try:
-            if isinstance(e, Exception) and str(e):
-                error_str = str(e)
-                # Check if the error is JSON formatted
-                if error_str.startswith('{') and error_str.endswith('}'):
-                    error_data = json.loads(error_str)
-                    error_text = error_data.get('text', str(e))
-                    error_id = None
-                    # Extract error_id from text if available
-                    if 'error_id:' in error_text:
-                        try:
-                            error_id = error_text.split('error_id:', 1)[1].strip().rstrip(')')
-                        except Exception:
-                            pass
-                    raise PoeAPIError(
-                        f"Poe API Error: {error_text}", 
-                        error_data=error_data, 
-                        error_id=error_id
-                    )
-                # Handle BotError format where JSON is inside the string
-                elif "BotError('" in error_str and "')" in error_str:
-                    json_part = error_str.split("BotError('", 1)[1].rsplit("')", 1)[0]
-                    try:
-                        error_data = json.loads(json_part)
-                        error_text = error_data.get('text', str(e))
-                        error_id = None
-                        # Extract error_id from text if available
-                        if 'error_id:' in error_text:
-                            try:
-                                error_id = error_text.split('error_id:', 1)[1].strip().rstrip(')')
-                            except Exception:
-                                pass
-                        raise PoeAPIError(
-                            f"Poe API Error: {error_text}", 
-                            error_data=error_data, 
-                            error_id=error_id
-                        )
-                    except json.JSONDecodeError:
-                        pass
-        except json.JSONDecodeError:
-            pass
+        # Use the helper function to parse error information
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+        
+        if error_data:
+            raise PoeAPIError(
+                f"Poe API Error: {error_message}",
+                error_data=error_data,
+                error_id=error_id
+            )
         
         # If we couldn't parse a structured error, just raise the original
         raise
