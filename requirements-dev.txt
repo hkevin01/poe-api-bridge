@@ -3,3 +3,4 @@ uvicorn==0.29.0
 modal==0.71.4
 pytest-asyncio==0.26.0
 python-dotenv==1.1.0
+black==25.1.0
