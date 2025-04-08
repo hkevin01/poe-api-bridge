@@ -382,6 +382,7 @@ def count_message_tokens(
     }
 
 
+@app.post("/chat/completions")
 @app.post("/v1/chat/completions")
 @app.post("//v1/chat/completions")
 async def chat_completions(
