@@ -11,6 +11,7 @@ image = Image.debian_slim().pip_install(
     "tiktoken==0.6.0",
 )
 
+
 @app.cls(image=image, secrets=[])
 class PoeApiBridge:
     @asgi_app()

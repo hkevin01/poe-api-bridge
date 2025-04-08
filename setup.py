@@ -17,4 +17,4 @@ setup(
         "dev": dev_requirements,
     },
     python_requires=">=3.8",
-) 
+)

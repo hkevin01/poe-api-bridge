@@ -1,4 +1,4 @@
-.PHONY: start test test-verbose install deploy clean install-prod install-dev
+.PHONY: start test test-verbose install deploy clean install-prod install-dev format
 
 # Install both production and development dependencies
 install:
@@ -27,6 +27,10 @@ test:
 # Run tests with verbose output
 test-verbose:
 	pytest -v
+
+# Format code with black
+format:
+	black .
 
 # Clean up artifacts
 clean:
