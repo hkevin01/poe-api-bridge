@@ -788,19 +788,6 @@ async def check_auth(api_key: str = Depends(get_api_key)):
     return {"status": "authenticated", "timestamp": datetime.now().isoformat()}
 
 
-@app.get("/api/debug/headers")
-async def debug_headers(request: Request):
-    """Debug endpoint that returns all headers sent with the request (with sensitive values redacted)"""
-    headers = {}
-    for name, value in request.headers.items():
-        if name.lower() in ("authorization", "cookie", "x-api-key"):
-            headers[name] = "[REDACTED]"
-        else:
-            headers[name] = value
-
-    return {"headers": headers, "path": request.url.path, "method": request.method}
-
-
 async def generate_poe_bot_response(
     model, messages: list[fp.ProtocolMessage], api_key: str
 ):
