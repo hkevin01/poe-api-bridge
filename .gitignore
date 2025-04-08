@@ -40,3 +40,4 @@ ENV/
 .vscode/
 .idea/
 /.env
+.venv
