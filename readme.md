@@ -9,6 +9,9 @@ Populate these environment variables in `.env`:
 ```
 SERVER_PORT=80
 POE_API_KEY=1234567890-234567890  # Copy from poe.com/api_key
+# Optional: Override the base URL for Poe BotQuery API
+# e.g., BOT_QUERY_API_BASE_URL=https://chunho-testing.quora.net/bot/
+BOT_QUERY_API_BASE_URL=https://api.poe.com/bot/
 ```
 
 Start in dev mode (with auto-reload)

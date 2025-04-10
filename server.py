@@ -1,5 +1,6 @@
 # Standard library imports
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -647,6 +648,21 @@ async def create_final_chunk(
         return result
 
 
+@functools.lru_cache()
+def get_bot_query_base_url() -> str:
+    """
+    Get the base URL for bot queries from environment variables.
+    Falls back to default if not specified.
+    """
+    from dotenv import load_dotenv
+
+    # Load environment variables from .env file
+    load_dotenv()
+
+    # Get the base URL from environment or use default
+    return os.getenv("BOT_QUERY_API_BASE_URL", "https://api.poe.com/bot/")
+
+
 async def stream_response(
     model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str
 ):
@@ -660,7 +676,11 @@ async def stream_response(
 
     try:
         async for message in get_bot_response(
-            messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
+            messages=messages,
+            bot_name=model,
+            api_key=api_key,
+            skip_system_prompt=True,
+            base_url=get_bot_query_base_url(),
         ):
             chunk = await create_stream_chunk(
                 message.text, model, format_type, first_chunk
@@ -800,7 +820,11 @@ async def generate_poe_bot_response(
         response = {"role": "assistant", "content": ""}
 
         async for message in get_bot_response(
-            messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
+            messages=messages,
+            bot_name=model,
+            api_key=api_key,
+            skip_system_prompt=True,
+            base_url=get_bot_query_base_url(),
         ):
             accumulated_text += message.text  # Accumulate the text
             response["content"] = accumulated_text
