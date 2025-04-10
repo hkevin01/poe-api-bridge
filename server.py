@@ -406,6 +406,22 @@ async def chat_completions(
     )
 
     try:
+        # Validate model first
+        model = normalize_model(request.model)
+
+        # Validate messages
+        if not request.messages:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "Messages array cannot be empty",
+                        "type": "invalid_request_error",
+                        "param": "messages",
+                    }
+                },
+            )
+
         # Prepare messages for the API call
         messages = []
         for msg in request.messages:
