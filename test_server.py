@@ -15,7 +15,9 @@ def client():
 
 @pytest.fixture
 def mock_get_bot_response():
-    async def mock_response(messages, bot_name, api_key, skip_system_prompt=False):
+    async def mock_response(
+        messages, bot_name, api_key, skip_system_prompt=False, base_url=None
+    ):
         # Simulate streaming response
         response = fp.PartialResponse(text="Test response")
         yield response

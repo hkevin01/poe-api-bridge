@@ -5,22 +5,17 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 from functools import wraps
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 # Third-party imports
 import fastapi_poe as fp
-import httpx
 import tiktoken
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
-    Query,
     Request,
     Response,
 )
@@ -114,14 +109,14 @@ class ChatCompletionMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     model: str
-    messages: List[ChatCompletionMessage]
+    messages: list[ChatCompletionMessage]
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
     seed: Optional[int] = None
     response_format: Optional[Dict[str, str]] = None
     n: Optional[int] = 1
     stream: Optional[bool] = False
-    stop: Optional[Union[str, List[str]]] = None
+    stop: Optional[Union[str, list[str]]] = None
     max_tokens: Optional[int] = None
     presence_penalty: Optional[float] = 0
     frequency_penalty: Optional[float] = 0
@@ -131,13 +126,13 @@ class ChatCompletionRequest(BaseModel):
 
 class EmbeddingRequest(BaseModel):
     model: str
-    input: Union[str, List[str]]
+    input: Union[str, list[str]]
     encoding_format: Optional[str] = "float"
     user: Optional[str] = None
 
 
 class ModerationRequest(BaseModel):
-    input: Union[str, List[str]]
+    input: Union[str, list[str]]
     model: Optional[str] = "text-moderation-latest"
 
 
@@ -356,7 +351,7 @@ def count_tokens(text: str, model: str = None) -> int:
 
 
 def count_message_tokens(
-    messages: List[fp.ProtocolMessage], model: str = None
+    messages: list[fp.ProtocolMessage], model: str = None
 ) -> Dict[str, int]:
     """Count tokens in a list of messages and return prompt and completion token counts
 
