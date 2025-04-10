@@ -13,6 +13,7 @@ def load_config():
         "host": os.getenv("SERVER_HOST", "0.0.0.0"),
         "port": int(os.environ["SERVER_PORT"]),
         "reload": False,
+        "log_level": os.getenv("LOG_LEVEL", "info"),
     }
 
 
@@ -28,11 +29,21 @@ def main():
         default=config["reload"],
         help="Enable auto-reload",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["critical", "error", "warning", "info", "debug", "trace"],
+        default=config["log_level"],
+        help="Set logging level",
+    )
 
     args = parser.parse_args()
 
+    # Set log level in environment for the server to pick up
+    os.environ["LOG_LEVEL"] = args.log_level
+
     print(f"Starting server on {config['host']}:{config['port']}")
     print(f"Auto-reload: {'enabled' if args.reload else 'disabled'}")
+    print(f"Log level: {args.log_level}")
     print(
         f"API documentation available at: http://{config['host']}:{config['port']}/docs"
     )
@@ -42,6 +53,7 @@ def main():
         host=config["host"],
         port=config["port"],
         reload=args.reload,
+        log_level=args.log_level,
     )
 
 

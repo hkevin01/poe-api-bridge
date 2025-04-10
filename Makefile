@@ -16,7 +16,7 @@ install-dev:
 start:
 	python3 local_run.py
 
-
+# Start the development server with auto-reload
 start-dev:
 	python3 local_run.py --reload
 

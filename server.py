@@ -32,8 +32,10 @@ from fastapi_poe.client import get_bot_response
 from pydantic import BaseModel, Field
 
 # Configure logging
+# Get log level from environment - matches uvicorn's --log-level
+log_level = os.getenv("LOG_LEVEL", "info").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, log_level),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("poe-openai-proxy")
@@ -392,6 +394,20 @@ async def chat_completions(
     request_id = os.urandom(4).hex()
     logger.info(
         f"[{request_id}] Processing chat completion request for model: {request.model}"
+    )
+
+    # Log request parameters at debug level
+    logger.debug(
+        f"[{request_id}] Request parameters:\n"
+        f"    model={request.model}\n"
+        f"    temperature={request.temperature}\n"
+        f"    top_p={request.top_p}\n"
+        f"    n={request.n}\n"
+        f"    stream={request.stream}\n"
+        f"    max_tokens={request.max_tokens}\n"
+        f"    presence_penalty={request.presence_penalty}\n"
+        f"    frequency_penalty={request.frequency_penalty}\n"
+        f"    messages_count={len(request.messages)}"
     )
 
     try:
