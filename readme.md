@@ -41,6 +41,20 @@ Deploy to Modal
 make deploy
 ```
 
+## Logging
+This project uses Better Stack for logging. The following environment variables are **required**:
+
+1. `LOGTAIL_SOURCE_TOKEN`: Your Better Stack source token
+2. `LOGTAIL_SOURCE_ID`: Identifier for your log source (e.g., "poe_api_bridge")
+3. `LOGTAIL_HOST`: Your Better Stack ingestion host
+
+All environment variables must be properly set or the application will fail to start.
+
+When deploying to Modal, add these variables to your secrets:
+```
+modal secret create poe-api-bridge-secrets LOGTAIL_SOURCE_TOKEN=your_token LOGTAIL_SOURCE_ID=poe_api_bridge LOGTAIL_HOST=your-host
+```
+
 ## Utils
 Clean artifacts
 ```

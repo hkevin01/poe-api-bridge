@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from functools import wraps
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse
 
 # Third-party imports
 import fastapi_poe as fp
@@ -25,6 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_poe.client import get_bot_response
 from pydantic import BaseModel, Field
+from logtail import LogtailHandler
 
 # Configure logging
 # Get log level from environment - matches uvicorn's --log-level
@@ -33,10 +35,138 @@ logging.basicConfig(
     level=getattr(logging, log_level),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("poe-openai-proxy")
 
+# Create the FastAPI app
 app = FastAPI()
 
+# Create a logger dependency
+class LoggerFactory:
+    _instance = None
+    _initialized = False
+    _logger = None
+    _source_token = None
+    _source_id = None
+    _host = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = LoggerFactory()
+        return cls._instance
+    
+    def initialize(self):
+        """Initializes the logger with Better Stack configuration."""
+        if self._initialized:
+            return
+        
+        # Create a logger instance
+        logger = logging.getLogger("poe-openai-proxy")
+        
+        try:
+            # Using dictionary-style access (os.environ[]) to ensure it throws exception when not present
+            self._source_token = os.environ["LOGTAIL_SOURCE_TOKEN"]
+            self._source_id = os.environ["LOGTAIL_SOURCE_ID"]
+            
+            # LOGTAIL_HOST is optional with a default value
+            self._host = os.environ.get("LOGTAIL_HOST", "s1275096.eu-nbg-2.betterstackdata.com")
+            
+            # Remove any http:// or https:// prefix if present (Better Stack expects host without protocol)
+            if self._host.startswith(("http://", "https://")):
+                parsed_url = urlparse(self._host)
+                self._host = parsed_url.netloc
+            
+            # Initialize Better Stack handler
+            logtail_handler = LogtailHandler(
+                source_token=self._source_token,
+                host=self._host,
+            )
+            
+            # Set formatter to include same format as basic logging
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            logtail_handler.setFormatter(formatter)
+            
+            # Add the handler to the logger
+            logger.addHandler(logtail_handler)
+            
+            # Minimal startup logging
+            context = {"source_id": self._source_id}
+            logger.info("Poe API Bridge starting", extra={"context": context})
+            
+            self._initialized = True
+            self._logger = logger
+            
+        except KeyError as e:
+            # This will provide a clear error message about which environment variable is missing
+            raise ValueError(f"Required environment variable not set: {e}")
+    
+    def get_logger(self):
+        """Returns the initialized logger."""
+        if not self._initialized:
+            self.initialize()
+        return self._logger
+    
+    def log_context(self, **kwargs):
+        """Creates a context dictionary for structured logging, including source_id."""
+        if not self._initialized:
+            self.initialize()
+            
+        context = dict(kwargs)
+        context["source_id"] = self._source_id
+        return {"context": context}
+    
+    @property
+    def source_id(self):
+        """Return the source ID."""
+        if not self._initialized:
+            self.initialize()
+        return self._source_id
+    
+    @property
+    def host(self):
+        """Return the host."""
+        if not self._initialized:
+            self.initialize()
+        return self._host
+    
+    @property
+    def source_token(self):
+        """Return the source token."""
+        if not self._initialized:
+            self.initialize()
+        return self._source_token
+
+
+# Create a dependency to get the logger
+def get_logger():
+    factory = LoggerFactory.get_instance()
+    return factory.get_logger()
+
+# Create a dependency to get the context
+def get_log_context(**kwargs):
+    factory = LoggerFactory.get_instance()
+    return factory.log_context(**kwargs)
+
+# Create a dependency to get a configured logger with request ID
+async def get_request_logger(request: Request = None):
+    logger = get_logger()
+    request_id = os.urandom(4).hex()
+    context = {}
+    
+    if request:
+        context = {
+            "request_id": request_id,
+            "path": request.url.path,
+            "method": request.method,
+            "user_agent": request.headers.get("user-agent", "unknown"),
+            "client_ip": request.client.host if request.client else "unknown",
+        }
+    
+    # Return both the logger and the request_id
+    return {
+        "logger": logger,
+        "request_id": request_id,
+        "context": context
+    }
 
 # Add request logging middleware with simplified logging
 @app.middleware("http")
@@ -47,7 +177,19 @@ async def log_requests(request: Request, call_next):
     method = request.method
     request_id = os.urandom(4).hex()
 
-    logger.info(f"[{request_id}] Request received: {method} {path}")
+    # Get the logger instance
+    logger = get_logger()
+    
+    # Create contextual information for Better Stack
+    context = {
+        "request_id": request_id,
+        "path": path,
+        "method": method,
+        "user_agent": request.headers.get("user-agent", "unknown"),
+        "client_ip": request.client.host if request.client else "unknown",
+    }
+
+    # No info log for regular requests to reduce verbosity
 
     try:
         response = await call_next(request)
@@ -56,22 +198,35 @@ async def log_requests(request: Request, call_next):
         formatted_process_time = f"{process_time:.2f}"
         status_code = response.status_code
 
+        # Add response info to context
+        context.update({
+            "status_code": status_code,
+            "process_time_ms": process_time,
+        })
+
+        # Only log errors (4xx and 5xx)
         if status_code >= 400:
             logger.warning(
-                f"[{request_id}] Error response: {method} {path} -> {status_code} (took {formatted_process_time} ms)"
+                f"[{request_id}] Error: {method} {path} -> {status_code} (took {formatted_process_time} ms)",
+                extra=get_log_context(**context)
             )
-        else:
-            logger.info(
-                f"[{request_id}] Response: {method} {path} -> {status_code} (took {formatted_process_time} ms)"
-            )
+        # No info log for successful responses to reduce verbosity
 
         return response
     except Exception as e:
         process_time = (time.time() - start_time) * 1000
         formatted_process_time = f"{process_time:.2f}"
 
+        # Add error info to context
+        context.update({
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "process_time_ms": process_time,
+        })
+
         logger.exception(
-            f"[{request_id}] Unhandled exception in {method} {path} (took {formatted_process_time} ms): {str(e)}"
+            f"[{request_id}] Exception: {method} {path} - {str(e)} (took {formatted_process_time} ms)",
+            extra=get_log_context(**context)
         )
 
         # Re-raise the exception for FastAPI's exception handlers
@@ -384,11 +539,16 @@ def count_message_tokens(
 @app.post("/v1/chat/completions")
 @app.post("//v1/chat/completions")
 async def chat_completions(
-    request: ChatCompletionRequest, api_key: str = Depends(get_api_key)
+    request: ChatCompletionRequest, 
+    api_key: str = Depends(get_api_key),
+    logger_data: dict = Depends(get_request_logger)
 ):
-    request_id = os.urandom(4).hex()
+    logger = logger_data["logger"]
+    request_id = logger_data["request_id"]
+    
     logger.info(
-        f"[{request_id}] Processing chat completion request for model: {request.model}"
+        f"[{request_id}] Processing chat completion request for model: {request.model}",
+        extra=get_log_context(request_id=request_id, model=request.model)
     )
 
     # Log request parameters at debug level
@@ -452,13 +612,13 @@ async def chat_completions(
                 "X-Accel-Buffering": "no",
             }
             return StreamingResponse(
-                stream_openai_format(request.model, messages, api_key),
+                stream_openai_format(request.model, messages, api_key, request_id),
                 headers=headers,
                 media_type="text/event-stream",
             )
 
         # For non-streaming, accumulate the full response
-        response = await generate_poe_bot_response(request.model, messages, api_key)
+        response = await generate_poe_bot_response(request.model, messages, api_key, request_id)
 
         # Calculate token counts
         token_counts = count_message_tokens(messages)
@@ -491,7 +651,10 @@ async def chat_completions(
         return completion_response
 
     except Exception as e:
-        logger.exception(f"Error in chat_completions: {str(e)}")
+        logger.exception(
+            f"Error in chat_completions: {str(e)}", 
+            extra=get_log_context(request_id=request_id, error=str(e), error_type=type(e).__name__)
+        )
 
         # Default error values
         status_code = 500
@@ -552,42 +715,82 @@ async def chat_completions(
         )
 
 
-@app.get("/models")
-@app.get("/v1/models")
-@app.get("//v1/models")  # Handle double slash case like other endpoints
-async def list_models_openai():
-    combined_models = list(models) + list(models_mapping.keys())
+async def stream_response(
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str, request_id: str = None
+):
+    """Common streaming function for all response types"""
+    model = normalize_model(model)
+    first_chunk = True
+    accumulated_response = ""
+    if not request_id:
+        request_id = os.urandom(4).hex()
+    logger = get_logger()
 
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": model,
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "poe",
-                "permission": [
-                    {
-                        "id": "modelperm-" + os.urandom(12).hex(),
-                        "object": "model_permission",
-                        "created": int(time.time()),
-                        "allow_create_engine": False,
-                        "allow_sampling": True,
-                        "allow_logprobs": True,
-                        "allow_search_indices": False,
-                        "allow_view": True,
-                        "allow_fine_tuning": False,
-                        "organization": "*",
-                        "group": None,
-                        "is_blocking": False,
-                    }
-                ],
-                "root": model,
-                "parent": None,
-            }
-            for model in combined_models
-        ],
-    }
+    # Calculate prompt tokens before starting stream
+    token_counts = count_message_tokens(messages)
+
+    try:
+        async for message in get_bot_response(
+            messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
+        ):
+            chunk = await create_stream_chunk(
+                message.text, model, format_type, first_chunk
+            )
+            accumulated_response += message.text  # Accumulate the full response text
+            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+            first_chunk = False
+            await asyncio.sleep(0)  # Allow event loop to process
+
+        # Calculate completion tokens from accumulated response
+        completion_tokens = count_tokens(accumulated_response)
+        token_counts["completion_tokens"] = completion_tokens
+        token_counts["total_tokens"] = token_counts["prompt_tokens"] + completion_tokens
+
+        # Send final message with token counts
+        final_chunk = await create_final_chunk(model, format_type, token_counts)
+        yield f"data: {json.dumps(final_chunk)}\n\n".encode("utf-8")
+
+        if format_type in ["completion", "chat"]:
+            yield b"data: [DONE]\n\n"
+
+    except Exception as e:
+        logger.exception(
+            f"Stream error: {str(e)}", 
+            extra=get_log_context(
+                request_id=request_id, 
+                model=model, 
+                error=str(e), 
+                error_type=type(e).__name__
+            )
+        )
+
+        # Use the helper function to parse error information
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+
+        # Add token counts to error response if available
+        if accumulated_response:
+            # Calculate completion tokens from accumulated response
+            completion_tokens = count_tokens(accumulated_response)
+            token_counts["completion_tokens"] = completion_tokens
+            token_counts["total_tokens"] = (
+                token_counts["prompt_tokens"] + completion_tokens
+            )
+
+        error_data = {
+            "error": {"message": error_message, "type": error_type, "code": error_type}
+        }
+
+        # Add error_id if available
+        if error_id:
+            error_data["error"]["error_id"] = error_id
+
+        # Add token counts if available and we had some response before the error
+        if accumulated_response:
+            error_data["usage"] = token_counts
+
+        yield f"data: {json.dumps(error_data)}\n\n".encode("utf-8")
+        if format_type in ["completion", "chat"]:
+            yield b"data: [DONE]\n\n"
 
 
 async def create_stream_chunk(
@@ -691,7 +894,7 @@ def get_bot_query_base_url() -> str:
 
 
 async def stream_response(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str, request_id: str = None
 ):
     """Common streaming function for all response types"""
     model = normalize_model(model)
@@ -761,17 +964,254 @@ async def stream_response(
             yield b"data: [DONE]\n\n"
 
 
-async def stream_completions_format(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str
+async def stream_openai_format(
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
 ):
-    async for chunk in stream_response(model, messages, api_key, "completion"):
+    async for chunk in stream_response(model, messages, api_key, "chat", request_id):
         yield chunk
+
+
+async def stream_completions_format(
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
+):
+    async for chunk in stream_response(model, messages, api_key, "completion", request_id):
+        yield chunk
+
+
+@app.get("/")
+async def root(request: Request, logger_data: dict = Depends(get_request_logger)):
+    logger = logger_data["logger"]
+    
+    # Get host information
+    host = request.headers.get("host", "unknown")
+    origin = request.headers.get("origin", "unknown")
+    referer = request.headers.get("referer", "unknown")
+    
+    # No logging on root endpoint to reduce verbosity
+    
+    return {
+        "message": "Poe API OpenAI-compatible proxy server",
+        "version": "1.0.0",
+        "endpoints": {
+            "OpenAI-compatible": [
+                "/v1/chat/completions",
+                "/v1/completions",
+                "/v1/models",
+            ],
+            "Utility": [
+                "/api/auth/check - Verify authentication",
+                "/api/logs/test - Test Better Stack logging",
+            ],
+        },
+        "server_time": datetime.now().isoformat(),
+        "hosting_domain": host,
+        "logging": {
+            "status": "enabled",
+            "provider": "Better Stack",
+            "endpoint": logger.host,
+            "source_id": logger.source_id,
+            "source_token": logger.source_token[:4] + "***" if logger.source_token else "not_set",
+        },
+    }
+
+
+async def generate_poe_bot_response(
+    model, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
+):
+    model = normalize_model(model)
+    if not request_id:
+        request_id = os.urandom(4).hex()
+    logger = get_logger()
+    
+    # No info log for request processing to reduce verbosity
+    accumulated_text = ""
+
+    try:
+        response = {"role": "assistant", "content": ""}
+
+        async for message in get_bot_response(
+            messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
+        ):
+            accumulated_text += message.text  # Accumulate the text
+            response["content"] = accumulated_text
+
+        # No info log for successful response to reduce verbosity
+
+    except Exception as e:
+        logger.exception(
+            f"[{request_id}] Model error: {str(e)}", 
+            extra=get_log_context(
+                request_id=request_id, 
+                model=model, 
+                error=str(e), 
+                error_type=type(e).__name__
+            )
+        )
+        # Use the helper function to parse error information
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+
+        if error_data:
+            raise PoeAPIError(
+                f"Poe API Error: {error_message}",
+                error_data=error_data,
+                error_id=error_id,
+            )
+
+        # If we couldn't parse a structured error, just raise the original
+        raise
+
+    return response
+
+
+# Add an exception handler for better logging
+@app.exception_handler(Exception)
+async def global_exception_handler(
+    request: Request, 
+    exc: Exception
+):
+    request_id = os.urandom(4).hex()
+    logger = get_logger()
+    
+    context = {
+        "request_id": request_id,
+        "path": request.url.path,
+        "method": request.method,
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    }
+    
+    logger.exception(
+        f"Exception in {request.method} {request.url.path}: {type(exc).__name__}",
+        extra=get_log_context(**context)
+    )
+
+    # For HTTPExceptions, return their predefined responses
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=(
+                {"error": exc.detail}
+                if not isinstance(exc.detail, dict)
+                else exc.detail
+            ),
+        )
+
+    # For other exceptions, return a 500 error
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "message": f"An unexpected error occurred: {str(exc)}",
+                "type": "server_error",
+                "request_id": request_id,
+            }
+        },
+    )
+
+
+@app.get("/api/logs/test")
+async def test_logging(
+    request: Request, 
+    message: str = Query("Test log message", description="Custom log message to send"),
+    level: str = Query("info", description="Log level (debug, info, warning, error, critical)"),
+    logger_data: dict = Depends(get_request_logger)
+):
+    """Endpoint to test Better Stack logging"""
+    logger = logger_data["logger"]
+    request_id = logger_data["request_id"]
+    current_time = datetime.now().isoformat()
+    
+    # Get host information
+    host = request.headers.get("host", "unknown")
+    
+    # Create log context
+    context = {
+        "request_id": request_id,
+        "test": True,
+        "timestamp": current_time,
+        "host": host,
+        "domain": request.base_url.netloc,
+        "user_agent": request.headers.get("user-agent", "unknown"),
+        "client_ip": request.client.host if request.client else "unknown",
+        "message": message,
+    }
+    
+    # Log with the specified level
+    log_message = f"[{request_id}] TEST LOG: {message}"
+    
+    if level.lower() == "debug":
+        logger.debug(log_message, extra=get_log_context(**context))
+    elif level.lower() == "warning":
+        logger.warning(log_message, extra=get_log_context(**context))
+    elif level.lower() == "error":
+        logger.error(log_message, extra=get_log_context(**context))
+    elif level.lower() == "critical":
+        logger.critical(log_message, extra=get_log_context(**context))
+    else:
+        # Default to info
+        logger.info(log_message, extra=get_log_context(**context))
+    
+    return {
+        "status": "success",
+        "message": f"Test log sent to Better Stack with level: {level}",
+        "timestamp": current_time,
+        "request_id": request_id,
+        "log_details": {
+            "level": level,
+            "content": message,
+            "endpoint": logger.host,
+            "source_id": logger.source_id,
+        }
+    }
+
+
+@app.get("/models")
+@app.get("/v1/models")
+@app.get("//v1/models")  # Handle double slash case like other endpoints
+async def list_models_openai(logger_data: dict = Depends(get_request_logger)):
+    combined_models = list(models) + list(models_mapping.keys())
+
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": model,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "poe",
+                "permission": [
+                    {
+                        "id": "modelperm-" + os.urandom(12).hex(),
+                        "object": "model_permission",
+                        "created": int(time.time()),
+                        "allow_create_engine": False,
+                        "allow_sampling": True,
+                        "allow_logprobs": True,
+                        "allow_search_indices": False,
+                        "allow_view": True,
+                        "allow_fine_tuning": False,
+                        "organization": "*",
+                        "group": None,
+                        "is_blocking": False,
+                    }
+                ],
+                "root": model,
+                "parent": None,
+            }
+            for model in combined_models
+        ],
+    }
 
 
 @app.post("/completions")
 @app.post("/v1/completions")
 @app.post("//v1/completions")
-async def completions(request: Request):
+async def completions(
+    request: Request, 
+    logger_data: dict = Depends(get_request_logger)
+):
+    logger = logger_data["logger"]
+    request_id = logger_data["request_id"]
     body = await request.json()
 
     messages = [fp.ProtocolMessage(role="user", content=body.get("prompt", ""))]
@@ -780,12 +1220,12 @@ async def completions(request: Request):
 
     if stream:
         return StreamingResponse(
-            stream_completions_format(model, messages, await get_api_key()),
+            stream_completions_format(model, messages, await get_api_key(), request_id),
             media_type="text/event-stream",
         )
 
     # For non-streaming requests, accumulate the full response
-    response = await generate_poe_bot_response(model, messages, await get_api_key())
+    response = await generate_poe_bot_response(model, messages, await get_api_key(), request_id)
 
     # Calculate token counts
     prompt_tokens = count_tokens(body.get("prompt", ""))
@@ -813,19 +1253,22 @@ async def completions(request: Request):
     }
 
 
-@app.get("/")
-async def root():
+@app.get("/api/auth/check")
+async def check_auth(
+    request: Request, 
+    api_key: str = Depends(get_api_key),
+    logger_data: dict = Depends(get_request_logger)
+):
+    """Endpoint to check if authentication is working"""
+    # No logging for auth check to reduce verbosity
+    
     return {
-        "message": "Poe API OpenAI-compatible proxy server",
-        "version": "1.0.0",
-        "endpoints": {
-            "OpenAI-compatible": [
-                "/v1/chat/completions",
-                "/v1/completions",
-                "/v1/models",
-            ],
-            "Poe-compatible": [],
-        },
+        "status": "authenticated", 
+        "timestamp": datetime.now().isoformat(),
+        "server_info": {
+            "domain": request.base_url.netloc,
+            "scheme": request.base_url.scheme,
+        }
     }
 
 
@@ -883,9 +1326,8 @@ async def stream_openai_format(
     async for chunk in stream_response(model, messages, api_key, "chat"):
         yield chunk
 
-
 @app.get("/openapi.json")
-async def get_openapi_json():
+async def get_openapi_json(logger_data: dict = Depends(get_request_logger)):
     if app.openapi_schema:
         return app.openapi_schema
 
@@ -901,33 +1343,3 @@ async def get_openapi_json():
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
-
-
-# Add an exception handler for better logging
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception(
-        f"Exception in {request.method} {request.url.path}: {type(exc).__name__}"
-    )
-
-    # For HTTPExceptions, return their predefined responses
-    if isinstance(exc, HTTPException):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=(
-                {"error": exc.detail}
-                if not isinstance(exc.detail, dict)
-                else exc.detail
-            ),
-        )
-
-    # For other exceptions, return a 500 error
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": {
-                "message": f"An unexpected error occurred: {str(exc)}",
-                "type": "server_error",
-            }
-        },
-    )

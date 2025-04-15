@@ -1,16 +1,163 @@
 import pytest
 from fastapi.testclient import TestClient
-from server import app, fp, normalize_model, normalize_role, models, models_mapping
+from server import app, fp, normalize_model, normalize_role, models, models_mapping, LoggerFactory
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 import json
 import os
-from fastapi import HTTPException
+import logging
+from fastapi import HTTPException, Depends
+from typing import Dict, Any, Optional
 
 
-@pytest.fixture
+# Create a complete mock logger for testing
+class TestLogger:
+    """A test logger that doesn't connect to external services"""
+    def __init__(self):
+        self.logs = []
+        self.logger = logging.getLogger("test-logger")
+        self.host = "test-host"
+        self.source_id = "test-source-id"
+        self.source_token = "test-token"
+    
+    def info(self, msg, *args, **kwargs):
+        self.logs.append({"level": "info", "msg": msg, "args": args, "kwargs": kwargs})
+        self.logger.info(msg, *args, **kwargs)
+    
+    def debug(self, msg, *args, **kwargs):
+        self.logs.append({"level": "debug", "msg": msg, "args": args, "kwargs": kwargs})
+        self.logger.debug(msg, *args, **kwargs)
+    
+    def warning(self, msg, *args, **kwargs):
+        self.logs.append({"level": "warning", "msg": msg, "args": args, "kwargs": kwargs})
+        self.logger.warning(msg, *args, **kwargs)
+    
+    def error(self, msg, *args, **kwargs):
+        self.logs.append({"level": "error", "msg": msg, "args": args, "kwargs": kwargs})
+        self.logger.error(msg, *args, **kwargs)
+    
+    def critical(self, msg, *args, **kwargs):
+        self.logs.append({"level": "critical", "msg": msg, "args": args, "kwargs": kwargs})
+        self.logger.critical(msg, *args, **kwargs)
+    
+    def exception(self, msg, *args, **kwargs):
+        self.logs.append({"level": "exception", "msg": msg, "args": args, "kwargs": kwargs})
+        self.logger.exception(msg, *args, **kwargs)
+
+
+# Create a mock LoggerFactory that returns our TestLogger
+class TestLoggerFactory:
+    """Mock LoggerFactory that returns a TestLogger for testing"""
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = TestLoggerFactory()
+        return cls._instance
+    
+    def __init__(self):
+        self._initialized = True
+        self._logger = TestLogger()
+        self._source_token = "test-token"
+        self._source_id = "test-source-id"
+        self._host = "test-host"
+    
+    def get_logger(self):
+        """Returns the test logger"""
+        return self._logger
+    
+    def log_context(self, **kwargs):
+        """Creates a context dictionary for structured logging with test source_id"""
+        context = dict(kwargs)
+        context["source_id"] = self._source_id
+        return {"context": context}
+    
+    @property
+    def source_id(self):
+        """Return the test source ID"""
+        return self._source_id
+    
+    @property
+    def host(self):
+        """Return the test host"""
+        return self._host
+    
+    @property
+    def source_token(self):
+        """Return the test source token"""
+        return self._source_token
+    
+    def initialize(self):
+        """No-op implementation for testing"""
+        pass
+
+
+# Create reusable test factory instance
+test_logger_factory = TestLoggerFactory()
+
+
+# Create test versions of our logger dependencies
+def get_test_logger():
+    """Test version of get_logger that uses our test factory"""
+    return test_logger_factory.get_logger()
+
+
+def get_test_log_context(**kwargs):
+    """Test version of get_log_context that uses our test factory"""
+    return test_logger_factory.log_context(**kwargs)
+
+
+async def get_test_request_logger(request=None):
+    """Test version of get_request_logger"""
+    logger = test_logger_factory.get_logger()
+    request_id = "test-request-id"
+    context = {}
+    
+    if request:
+        context = {
+            "request_id": request_id,
+            "path": getattr(request.url, 'path', '/test'),
+            "method": getattr(request, 'method', 'TEST'),
+            "user_agent": getattr(request.headers, 'get', lambda x, y: 'test')("user-agent", "test"),
+            "client_ip": getattr(getattr(request, 'client', None), 'host', 'test-ip'),
+        }
+    
+    return {
+        "logger": logger,
+        "request_id": request_id,
+        "context": context
+    }
+
+
+@pytest.fixture(scope="function")
 def client():
-    return TestClient(app)
+    """Test client with logger dependencies overridden"""
+    # Import the dependencies that need to be overridden
+    from server import get_logger, get_log_context, get_request_logger
+    
+    # Save the original factory method
+    original_get_instance = LoggerFactory.get_instance
+    
+    # Override the factory method to return our test factory
+    LoggerFactory.get_instance = TestLoggerFactory.get_instance
+    
+    # Set up dependency overrides
+    app.dependency_overrides[get_logger] = get_test_logger
+    app.dependency_overrides[get_log_context] = get_test_log_context
+    app.dependency_overrides[get_request_logger] = get_test_request_logger
+    
+    # Create a test client with the overrides in place
+    test_client = TestClient(app)
+    
+    # Yield the test client for the test to use
+    yield test_client
+    
+    # Clean up the overrides after the test
+    app.dependency_overrides = {}
+    
+    # Restore the original factory method
+    LoggerFactory.get_instance = original_get_instance
 
 
 @pytest.fixture
