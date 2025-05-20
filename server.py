@@ -342,29 +342,20 @@ def normalize_model(model: str):
     # trim any whitespace from the model name
     model = model.strip()
 
+    # Apply mappings if the model is in the mapping dictionary
     mappings_lowercase = {k.lower(): v for k, v in models_mapping.items()}
-
     if model.lower() in mappings_lowercase:
-        model = mappings_lowercase[model.lower()]
+        return mappings_lowercase[model.lower()]
 
+    # Check if model is in predefined list for proper casing
     models_lowercase = [m.lower() for m in models]
-
-    if model.lower() not in models_lowercase:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": {
-                    "message": f"The model '{model}' does not exist",
-                    "type": "invalid_request_error",
-                    "param": "model",
-                    "code": "model_not_found",
-                }
-            },
-        )
-
-    model_index = models_lowercase.index(model.lower())
-
-    return models[model_index]
+    if model.lower() in models_lowercase:
+        model_index = models_lowercase.index(model.lower())
+        return models[model_index]
+    
+    # If model isn't in the predefined list, just return it as is
+    # This allows using any bot name directly
+    return model
 
 
 # Custom HTTP Bearer authentication that returns 401 like OpenAI
