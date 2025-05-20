@@ -769,7 +769,7 @@ async def stream_response(
 
 
 async def create_stream_chunk(
-    message_text: str, model: str, format_type: str, is_first_chunk: bool = False
+    message_text: str, model: str, format_type: str, is_first_chunk: bool = False, is_replace_response: bool = False
 ):
     """Common function to create streaming response chunks"""
     chunk_id = os.urandom(12).hex()
@@ -802,7 +802,9 @@ async def create_stream_chunk(
                     "index": 0,
                     "delta": {
                         **({"role": "assistant"} if is_first_chunk else {}),
-                        **({"content": message_text} if message_text else {}),
+                        # When is_replace_response is True, we need to explicitly include content
+                        # to signal to the client to replace previous content
+                        "content": message_text,
                     },
                     "finish_reason": None,
                     "logprobs": None,
@@ -810,7 +812,7 @@ async def create_stream_chunk(
             ],
         }
     else:  # poe format
-        return {"response": message_text, "done": False}
+        return {"response": message_text, "done": False, "is_replace": is_replace_response}
 
 
 async def create_final_chunk(
@@ -884,10 +886,21 @@ async def stream_response(
             skip_system_prompt=True,
             base_url=get_bot_query_base_url(),
         ):
+            # Check if message should replace previous content
+            is_replace_response = getattr(message, 'is_replace_response', False)
+            
+            # If this is a replace message, reset accumulated response
+            if is_replace_response:
+                logger.debug(f"Replacing response with: {message.text}")
+                accumulated_response = ""  # Reset accumulated response
+                
             chunk = await create_stream_chunk(
-                message.text, model, format_type, first_chunk
+                message.text, model, format_type, first_chunk, is_replace_response
             )
-            accumulated_response += message.text  # Accumulate the full response text
+            
+            # Accumulate the text (this starts fresh if we just reset)
+            accumulated_response += message.text
+            
             yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
             first_chunk = False
             await asyncio.sleep(0)  # Allow event loop to process
@@ -971,54 +984,6 @@ async def root(request: Request, logger_data: dict = Depends(get_request_logger)
 async def v1_root():
     # Also serve the same HTML file for the /v1/ endpoint
     return FileResponse("static/index.html")
-
-
-async def generate_poe_bot_response(
-    model, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
-):
-    model = normalize_model(model)
-    if not request_id:
-        request_id = os.urandom(4).hex()
-    logger = get_logger()
-    
-    # No info log for request processing to reduce verbosity
-    accumulated_text = ""
-
-    try:
-        response = {"role": "assistant", "content": ""}
-
-        async for message in get_bot_response(
-            messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
-        ):
-            accumulated_text += message.text  # Accumulate the text
-            response["content"] = accumulated_text
-
-        # No info log for successful response to reduce verbosity
-
-    except Exception as e:
-        logger.exception(
-            f"[{request_id}] Model error: {str(e)}", 
-            extra=get_log_context(
-                request_id=request_id, 
-                model=model, 
-                error=str(e), 
-                error_type=type(e).__name__
-            )
-        )
-        # Use the helper function to parse error information
-        error_message, error_data, error_type, error_id = parse_poe_error(e)
-
-        if error_data:
-            raise PoeAPIError(
-                f"Poe API Error: {error_message}",
-                error_data=error_data,
-                error_id=error_id,
-            )
-
-        # If we couldn't parse a structured error, just raise the original
-        raise
-
-    return response
 
 
 # Add an exception handler for better logging
@@ -1291,7 +1256,16 @@ async def generate_poe_bot_response(
             skip_system_prompt=True,
             base_url=get_bot_query_base_url(),
         ):
-            accumulated_text += message.text  # Accumulate the text
+            # Check if message should replace previous content
+            is_replace_response = getattr(message, 'is_replace_response', False)
+            
+            # If this is a replace message, reset accumulated response
+            if is_replace_response:
+                logger.debug(f"[{request_id}] Replacing response with: {message.text}")
+                accumulated_text = ""  # Reset accumulated text
+                
+            # Accumulate the text (will start fresh if is_replace_response was True)
+            accumulated_text += message.text
             response["content"] = accumulated_text
 
         # Simple success log with response length only

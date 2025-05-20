@@ -173,6 +173,27 @@ def mock_get_bot_response():
         yield mock_response
 
 
+@pytest.fixture
+def mock_get_bot_response_with_replace():
+    """Mock that simulates a response with is_replace_response=True."""
+    async def mock_response(
+        messages, bot_name, api_key, skip_system_prompt=False, base_url=None
+    ):
+        # First yield normal response
+        initial = fp.PartialResponse(text="initial text")
+        yield initial
+        
+        # Then yield replacement response
+        replacement = fp.PartialResponse(
+            text="replacement text",
+            is_replace_response=True
+        )
+        yield replacement
+    
+    with patch("server.get_bot_response", mock_response):
+        yield mock_response
+
+
 def test_missing_auth(client):
     request_data = {
         "model": "Claude-3.5-Sonnet",
@@ -351,6 +372,57 @@ def test_streaming_format(client, mock_get_bot_response):
                         assert choices[0]["delta"] == {}
 
 
+@pytest.mark.asyncio
+async def test_streaming_with_replace_response(client, mock_get_bot_response_with_replace):
+    """Test streaming with message replacement."""
+    headers = {"Authorization": "Bearer test-token"}
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True,
+    }
+
+    chunks = []
+    with client.stream(
+        "POST", "/v1/chat/completions", json=request_data, headers=headers
+    ) as response:
+        assert response.status_code == 200
+
+        # Read and parse the streaming response
+        for line in response.iter_lines():
+            if line:
+                line = line.decode("utf-8") if isinstance(line, bytes) else line
+                if line.startswith("data: "):
+                    if line.strip() == "data: [DONE]":
+                        continue
+
+                    data = json.loads(line.replace("data: ", ""))
+                    chunks.append(data)
+
+    # Verify we got at least two chunks
+    assert len(chunks) >= 2
+    
+    # Verify first chunk has initial content
+    first_content = None
+    for chunk in chunks:
+        if "choices" in chunk and "delta" in chunk["choices"][0] and "content" in chunk["choices"][0]["delta"]:
+            first_content = chunk["choices"][0]["delta"]["content"]
+            break
+    
+    assert first_content == "initial text"
+    
+    # Find the replacement chunk
+    replacement_found = False
+    for chunk in chunks:
+        if "choices" in chunk and "delta" in chunk["choices"][0] and "content" in chunk["choices"][0]["delta"]:
+            content = chunk["choices"][0]["delta"]["content"]
+            if content == "replacement text":
+                replacement_found = True
+                break
+    
+    assert replacement_found, "Replacement text not found in response chunks"
+
+
 def test_openai_models_endpoint(client):
     response = client.get("/v1/models")
     assert response.status_code == 200
@@ -399,6 +471,26 @@ async def test_create_final_chunk():
     # Test poe format
     chunk = await create_final_chunk("test-model", "poe")
     assert chunk["done"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_stream_chunk_with_replace_response():
+    """Test creating stream chunks with is_replace_response flag."""
+    from server import create_stream_chunk
+    
+    # Test chat format with is_replace_response=True
+    chunk = await create_stream_chunk(
+        "replacement text", "test-model", "chat", False, True
+    )
+    assert chunk["object"] == "chat.completion.chunk"
+    assert chunk["choices"][0]["delta"]["content"] == "replacement text"
+    
+    # Test poe format with is_replace_response=True
+    chunk = await create_stream_chunk(
+        "replacement text", "test-model", "poe", False, True
+    )
+    assert chunk["response"] == "replacement text"
+    assert chunk["is_replace"] is True
 
 
 def test_error_handling_chat_completions(client):
