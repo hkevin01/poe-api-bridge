@@ -143,7 +143,7 @@ def test_consistent_tokenization():
 
     # Count tokens with different model params - all should be the same
     count1 = count_tokens(text)
-    count2 = count_tokens(text, model="gpt-4o")
+    count2 = count_tokens(text, model="GPT-4o")
     count3 = count_tokens(text, model="Claude-3.5-Sonnet")
 
     assert count1 == count2 == count3

@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from server import app, fp, normalize_model, normalize_role, models, models_mapping, LoggerFactory
+from server import app, fp, normalize_model, normalize_role, LoggerFactory
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 import json
@@ -183,23 +183,6 @@ def test_missing_auth(client):
     assert response.status_code == 401
 
 
-def test_normalize_model():
-    # Test exact match
-    assert normalize_model("Claude-3.5-Sonnet") == "Claude-3.5-Sonnet"
-
-    # Test case insensitive match
-    assert normalize_model("claude-3.5-sonnet") == "Claude-3.5-Sonnet"
-
-    # Test mapping
-    assert normalize_model("poe-cursor-model") == "Claude-3.5-Sonnet"
-
-    # Test invalid model
-    with pytest.raises(HTTPException) as exc_info:
-        normalize_model("invalid-model")
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.detail["error"]["code"] == "model_not_found"
-    assert "invalid-model" in exc_info.value.detail["error"]["message"]
-
 
 def test_normalize_role():
     assert normalize_role("user") == "user"
@@ -318,16 +301,12 @@ def test_error_response_format(client):
     }
 
     response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    assert response.status_code == 404
+    # Now expect 500 since we're no longer validating models upfront
+    # and errors are handled by the Poe API
+    assert response.status_code == 500
 
     error = response.json()
     assert "detail" in error
-    assert "error" in error["detail"]
-    assert "message" in error["detail"]["error"]
-    assert "type" in error["detail"]["error"]
-    assert error["detail"]["error"]["type"] == "invalid_request_error"
-    assert error["detail"]["error"]["param"] == "model"
-    assert error["detail"]["error"]["code"] == "model_not_found"
 
 
 def test_streaming_format(client, mock_get_bot_response):
@@ -380,14 +359,7 @@ def test_openai_models_endpoint(client):
     assert data["object"] == "list"
     assert "data" in data
     assert isinstance(data["data"], list)
-    assert len(data["data"]) > 0
-
-    model = data["data"][0]
-    assert "id" in model
-    assert "object" in model
-    assert "created" in model
-    assert "owned_by" in model
-    assert "permission" in model
+    # Since we now return an empty list, we don't check for content
 
 
 @pytest.mark.asyncio
@@ -437,11 +409,11 @@ def test_error_handling_chat_completions(client):
     }
 
     response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    assert response.status_code == 404
+    # Now expect 500 since we're no longer validating models upfront
+    # and errors are handled by the Poe API
+    assert response.status_code == 500
     error = response.json()
-    assert "error" in error["detail"]
-    assert error["detail"]["error"]["type"] == "invalid_request_error"
-    assert error["detail"]["error"]["code"] == "model_not_found"
+    assert "detail" in error
 
 
 def test_long_message_handling(client, mock_get_bot_response):

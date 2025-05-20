@@ -8,7 +8,8 @@ def test_regular_query():
     # Load environment variables from .env file
     load_dotenv()
 
-    BASE_URL = "http://localhost:80"
+    # Try to get base URL from environment variable, fall back to local URL if not present
+    BASE_URL = os.environ["OPENAI_COMPATIBLE_API_BASE_URL"]
     API_KEY = os.environ["POE_API_KEY"]
 
     if not API_KEY:
@@ -17,7 +18,7 @@ def test_regular_query():
 
     # Test data with a simple query
     test_data = {
-        "model": "gpt-4o",
+        "model": "GPT-4o",
         "messages": [
             {"role": "system", "content": "You are a helpful AI assistant."},
             {"role": "user", "content": "What is the capital of France?"},
@@ -55,7 +56,10 @@ def test_streaming_query():
     # Load environment variables from .env file
     load_dotenv()
 
-    BASE_URL = "http://localhost:80"
+    # Get port from environment or use default 8080
+    port = os.environ.get("SERVER_PORT", "8080")
+    # Try to get base URL from environment variable, fall back to local URL if not present
+    BASE_URL = os.environ.get("OPENAI_COMPATIBLE_API_BASE_URL", f"http://localhost:{port}")
     API_KEY = os.environ["POE_API_KEY"]
 
     if not API_KEY:
@@ -64,7 +68,7 @@ def test_streaming_query():
 
     # Test data with a simple query
     test_data = {
-        "model": "gpt-4o",
+        "model": "GPT-4o",
         "messages": [
             {"role": "system", "content": "You are a helpful AI assistant."},
             {"role": "user", "content": "What is the capital of France?"},

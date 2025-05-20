@@ -28,7 +28,7 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 RETRY_DELAY = int(os.getenv("RETRY_DELAY", "1"))
 
 # Get models from environment variable, fallback to default list
-DEFAULT_MODELS = ["Claude-3.5-Sonnet", "Claude-3.7-Sonnet", "gpt-4o"]
+DEFAULT_MODELS = ["Claude-3.5-Sonnet", "Claude-3.7-Sonnet", "GPT-4o"]
 AVAILABLE_MODELS = os.getenv("TEST_MODELS", ",".join(DEFAULT_MODELS)).split(",")
 
 # Configure client defaults

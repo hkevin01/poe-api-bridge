@@ -17,10 +17,13 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Query,
     Request,
     Response,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -242,14 +245,6 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-models = (
-    "Claude-3.5-Sonnet",
-    "Claude-3.7-Sonnet",
-    "gpt-4o",
-)
-
-models_mapping = {"poe-cursor-model": "Claude-3.5-Sonnet"}
-
 
 class ChatMessage(BaseModel):
     role: str  # role: the role of the message, either system, user, or assistant
@@ -341,20 +336,9 @@ def create_error_response(
 def normalize_model(model: str):
     # trim any whitespace from the model name
     model = model.strip()
-
-    # Apply mappings if the model is in the mapping dictionary
-    mappings_lowercase = {k.lower(): v for k, v in models_mapping.items()}
-    if model.lower() in mappings_lowercase:
-        return mappings_lowercase[model.lower()]
-
-    # Check if model is in predefined list for proper casing
-    models_lowercase = [m.lower() for m in models]
-    if model.lower() in models_lowercase:
-        model_index = models_lowercase.index(model.lower())
-        return models[model_index]
     
-    # If model isn't in the predefined list, just return it as is
-    # This allows using any bot name directly
+    # No validation and normalization - we pass through the model name as provided
+    # Model validation is handled by the Poe API service
     return model
 
 
@@ -603,17 +587,17 @@ async def chat_completions(
                 "X-Accel-Buffering": "no",
             }
             return StreamingResponse(
-                stream_openai_format(request.model, messages, api_key, request_id),
+                stream_openai_format(request.model, messages, api_key),
                 headers=headers,
                 media_type="text/event-stream",
             )
 
         # For non-streaming, accumulate the full response
-        response = await generate_poe_bot_response(request.model, messages, api_key, request_id)
+        response = await generate_poe_bot_response(request.model, messages, api_key)
 
         # Calculate token counts
         token_counts = count_message_tokens(messages)
-        response_tokens = count_tokens(response.get("content", ""))
+        response_tokens = count_tokens(response["content"] if isinstance(response, dict) else "")
         token_counts["completion_tokens"] = response_tokens
         token_counts["total_tokens"] = token_counts["prompt_tokens"] + response_tokens
 
@@ -631,7 +615,7 @@ async def chat_completions(
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": response.get("content"),
+                        "content": response["content"] if isinstance(response, dict) else str(response),
                     },
                     "finish_reason": finish_reason,
                 }
@@ -875,11 +859,6 @@ def get_bot_query_base_url() -> str:
     Get the base URL for bot queries from environment variables.
     Falls back to default if not specified.
     """
-    from dotenv import load_dotenv
-
-    # Load environment variables from .env file
-    load_dotenv()
-
     # Get the base URL from environment or use default
     return os.getenv("BOT_QUERY_API_BASE_URL", "https://api.poe.com/bot/")
 
@@ -888,6 +867,8 @@ async def stream_response(
     model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str, request_id: str = None
 ):
     """Common streaming function for all response types"""
+    # Get logger instance
+    logger = get_logger()
     model = normalize_model(model)
     first_chunk = True
     accumulated_response = ""
@@ -969,7 +950,10 @@ async def stream_completions_format(
         yield chunk
 
 
-@app.get("/")
+# Mount the static directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
 async def root(request: Request, logger_data: dict = Depends(get_request_logger)):
     logger = logger_data["logger"]
     
@@ -980,30 +964,13 @@ async def root(request: Request, logger_data: dict = Depends(get_request_logger)
     
     # No logging on root endpoint to reduce verbosity
     
-    return {
-        "message": "Poe API OpenAI-compatible proxy server",
-        "version": "1.0.0",
-        "endpoints": {
-            "OpenAI-compatible": [
-                "/v1/chat/completions",
-                "/v1/completions",
-                "/v1/models",
-            ],
-            "Utility": [
-                "/api/auth/check - Verify authentication",
-                "/api/logs/test - Test Better Stack logging",
-            ],
-        },
-        "server_time": datetime.now().isoformat(),
-        "hosting_domain": host,
-        "logging": {
-            "status": "enabled",
-            "provider": "Better Stack",
-            "endpoint": logger.host,
-            "source_id": logger.source_id,
-            "source_token": logger.source_token[:4] + "***" if logger.source_token else "not_set",
-        },
-    }
+    # Serve the static HTML file
+    return FileResponse("static/index.html")
+
+@app.get("/v1/", response_class=HTMLResponse)
+async def v1_root():
+    # Also serve the same HTML file for the /v1/ endpoint
+    return FileResponse("static/index.html")
 
 
 async def generate_poe_bot_response(
@@ -1160,37 +1127,73 @@ async def test_logging(
 @app.get("/v1/models")
 @app.get("//v1/models")  # Handle double slash case like other endpoints
 async def list_models_openai(logger_data: dict = Depends(get_request_logger)):
-    combined_models = list(models) + list(models_mapping.keys())
-
+    # Return list of available models in OpenAI-compatible format
+    model_configs = [
+        # Claude models
+        {
+            "id": "Claude-3.7-Sonnet",
+            "context_window": 200000
+        },
+        {
+            "id": "Claude-3.5-Sonnet",
+            "context_window": 200000
+        },
+        # GPT models
+        {
+            "id": "GPT-4o",
+            "context_window": 128000
+        },
+        {
+            "id": "GPT-4o-mini",
+            "context_window": 128000
+        },
+        # Gemini models
+        {
+            "id": "Gemini-2.0-Flash",
+            "context_window": 1000000
+        },
+        {
+            "id": "Gemini-2.5-Pro-Exp",
+            "context_window": 1000000
+        }
+    ]
+    
+    # Create timestamp for all models
+    creation_time = int(datetime.now().timestamp())
+    
+    # Convert model configs to OpenAI-compatible model objects with limited capabilities
+    model_objects = []
+    for config in model_configs:
+        model_id = config["id"]
+        context_window = config["context_window"]
+        
+        model_objects.append({
+            "id": model_id,
+            "object": "model",
+            "created": creation_time,
+            "owned_by": "poe-api-bridge",
+            "context_window": context_window,
+            "permission": [
+                {
+                    "id": f"modelperm-{model_id.lower().replace('-', '')}",
+                    "object": "model_permission",
+                    "created": creation_time,
+                    "allow_create_engine": False,
+                    "allow_sampling": False,
+                    "allow_logprobs": False,
+                    "allow_search_indices": False,
+                    "allow_view": True,
+                    "allow_fine_tuning": False,
+                    "organization": "*",
+                    "group": None,
+                    "is_blocking": False
+                }
+            ]
+        })
+    
     return {
         "object": "list",
-        "data": [
-            {
-                "id": model,
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "poe",
-                "permission": [
-                    {
-                        "id": "modelperm-" + os.urandom(12).hex(),
-                        "object": "model_permission",
-                        "created": int(time.time()),
-                        "allow_create_engine": False,
-                        "allow_sampling": True,
-                        "allow_logprobs": True,
-                        "allow_search_indices": False,
-                        "allow_view": True,
-                        "allow_fine_tuning": False,
-                        "organization": "*",
-                        "group": None,
-                        "is_blocking": False,
-                    }
-                ],
-                "root": model,
-                "parent": None,
-            }
-            for model in combined_models
-        ],
+        "data": model_objects,
     }
 
 
@@ -1274,6 +1277,7 @@ async def generate_poe_bot_response(
 ):
     model = normalize_model(model)
     request_id = os.urandom(4).hex()
+    logger = get_logger()
     logger.info(f"[{request_id}] Processing request for model {model}")
     accumulated_text = ""
 
