@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from server import app, fp, normalize_model, normalize_role, LoggerFactory
+from server import app, fp, normalize_model, normalize_role, BetterStackLogger
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 import json
@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 
 
 # Create a complete mock logger for testing
-class TestLogger:
+class MockLogger:
     """A test logger that doesn't connect to external services"""
     def __init__(self):
         self.logs = []
@@ -45,72 +45,58 @@ class TestLogger:
         self.logger.exception(msg, *args, **kwargs)
 
 
-# Create a mock LoggerFactory that returns our TestLogger
-class TestLoggerFactory:
-    """Mock LoggerFactory that returns a TestLogger for testing"""
+# Create a mock BetterStackLogger that returns our TestLogger
+class MockBetterStackLogger:
+    """Mock BetterStackLogger that returns a TestLogger for testing"""
     _instance = None
+    
+    def __init__(self):
+        self.logger = None
+        self.source_id = "test-source-id"
     
     @classmethod
     def get_instance(cls):
         if cls._instance is None:
-            cls._instance = TestLoggerFactory()
+            cls._instance = MockBetterStackLogger()
+            cls._instance._initialize()
         return cls._instance
     
-    def __init__(self):
-        self._initialized = True
-        self._logger = TestLogger()
-        self._source_token = "test-token"
-        self._source_id = "test-source-id"
-        self._host = "test-host"
+    def _initialize(self):
+        """Set up test logger"""
+        test_logger = MockLogger()
+        self.logger = test_logger.logger
     
-    def get_logger(self):
-        """Returns the test logger"""
-        return self._logger
-    
-    def log_context(self, **kwargs):
-        """Creates a context dictionary for structured logging with test source_id"""
+    def get_context(self, **kwargs):
+        """Create context dictionary with source_id"""
         context = dict(kwargs)
-        context["source_id"] = self._source_id
+        if self.source_id:
+            context["source_id"] = self.source_id
         return {"context": context}
     
-    @property
-    def source_id(self):
-        """Return the test source ID"""
-        return self._source_id
-    
-    @property
-    def host(self):
-        """Return the test host"""
-        return self._host
-    
-    @property
-    def source_token(self):
-        """Return the test source token"""
-        return self._source_token
     
     def initialize(self):
         """No-op implementation for testing"""
         pass
 
 
-# Create reusable test factory instance
-test_logger_factory = TestLoggerFactory()
+# Create reusable test logger instance
+test_logger_instance = MockBetterStackLogger.get_instance()
 
 
 # Create test versions of our logger dependencies
 def get_test_logger():
-    """Test version of get_logger that uses our test factory"""
-    return test_logger_factory.get_logger()
+    """Test version of get_logger that uses our test logger"""
+    return test_logger_instance.logger
 
 
 def get_test_log_context(**kwargs):
-    """Test version of get_log_context that uses our test factory"""
-    return test_logger_factory.log_context(**kwargs)
+    """Test version of get_log_context that uses our test logger"""
+    return test_logger_instance.get_context(**kwargs)
 
 
 async def get_test_request_logger(request=None):
     """Test version of get_request_logger"""
-    logger = test_logger_factory.get_logger()
+    logger = test_logger_instance.logger
     request_id = "test-request-id"
     context = {}
     
@@ -137,10 +123,10 @@ def client():
     from server import get_logger, get_log_context, get_request_logger
     
     # Save the original factory method
-    original_get_instance = LoggerFactory.get_instance
+    original_get_instance = BetterStackLogger.get_instance
     
-    # Override the factory method to return our test factory
-    LoggerFactory.get_instance = TestLoggerFactory.get_instance
+    # Override the factory method to return our test logger
+    BetterStackLogger.get_instance = MockBetterStackLogger.get_instance
     
     # Set up dependency overrides
     app.dependency_overrides[get_logger] = get_test_logger
@@ -157,7 +143,7 @@ def client():
     app.dependency_overrides = {}
     
     # Restore the original factory method
-    LoggerFactory.get_instance = original_get_instance
+    BetterStackLogger.get_instance = original_get_instance
 
 
 @pytest.fixture
@@ -568,3 +554,98 @@ def test_token_counts_with_complex_messages(client, mock_get_bot_response):
     assert data["usage"]["prompt_tokens"] > 10
     # Check that assistant message is counted in completion tokens
     assert data["usage"]["completion_tokens"] > 0
+
+
+def test_get_bot_response_exception(client):
+    """Test handling when get_bot_response throws an exception"""
+    headers = {"Authorization": "Bearer test-token"}
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": False,
+    }
+    
+    # Mock get_bot_response to throw an exception
+    with patch("server.get_bot_response") as mock_get_bot:
+        # Test with a ValueError that looks like a model error
+        mock_get_bot.side_effect = ValueError("Model Claude-3.5-Sonnet not found")
+        
+        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+        assert response.status_code == 404
+        error_data = response.json()
+        # Error is wrapped in 'detail' key
+        assert "detail" in error_data
+        assert "error" in error_data["detail"]
+        assert "Model Claude-3.5-Sonnet not found" in error_data["detail"]["error"]["message"]
+        assert error_data["detail"]["error"]["type"] == "invalid_request_error"
+    
+    # Test with a generic exception
+    with patch("server.get_bot_response") as mock_get_bot:
+        mock_get_bot.side_effect = Exception("Internal server error from Poe")
+        
+        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+        assert response.status_code == 500
+        error_data = response.json()
+        assert "detail" in error_data
+        assert "error" in error_data["detail"]
+        assert "Internal server error from Poe" in error_data["detail"]["error"]["message"]
+        assert error_data["detail"]["error"]["type"] == "poe_server_error"
+    
+    # Test with a JSON-formatted error (simulating Poe API error)
+    with patch("server.get_bot_response") as mock_get_bot:
+        mock_get_bot.side_effect = Exception('{"text": "Rate limit exceeded", "error_type": "rate_limit", "status": 429}')
+        
+        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+        assert response.status_code == 500
+        error_data = response.json()
+        assert "detail" in error_data
+        assert "error" in error_data["detail"]
+        assert "Rate limit exceeded" in error_data["detail"]["error"]["message"]
+        assert "poe_error" in error_data["detail"]["error"]
+
+
+def test_get_bot_response_streaming_exception(client):
+    """Test handling when get_bot_response throws an exception during streaming"""
+    headers = {"Authorization": "Bearer test-token"}
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True,
+    }
+    
+    # Mock get_bot_response to throw an exception after yielding some data
+    async def mock_stream_with_error(*args, **kwargs):
+        # Yield one successful message
+        yield fp.PartialResponse(text="Hello, ")
+        # Then throw an exception
+        raise Exception("Connection lost during streaming")
+    
+    with patch("server.get_bot_response", new=mock_stream_with_error):
+        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+        assert response.status_code == 200  # Streaming starts with 200
+        
+        # Read the stream
+        chunks = []
+        for line in response.iter_lines():
+            if line:
+                chunks.append(line)
+        
+        # Should have at least the initial chunk and error chunk
+        assert len(chunks) >= 2
+        
+        # Check that we got the initial data
+        first_chunk = json.loads(chunks[0].replace("data: ", ""))
+        assert "choices" in first_chunk
+        assert first_chunk["choices"][0]["delta"]["content"] == "Hello, "
+        
+        # Check that we got the error
+        error_found = False
+        for chunk in chunks[1:]:
+            if "error" in chunk:
+                error_data = json.loads(chunk.replace("data: ", ""))
+                assert "error" in error_data
+                assert "Connection lost during streaming" in error_data["error"]["message"]
+                error_found = True
+                break
+        
+        assert error_found, "Error message not found in streaming response"

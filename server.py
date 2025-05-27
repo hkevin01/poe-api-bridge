@@ -42,114 +42,64 @@ logging.basicConfig(
 # Create the FastAPI app
 app = FastAPI()
 
-# Create a logger dependency
-class LoggerFactory:
+# Create a simplified Better Stack logger
+class BetterStackLogger:
     _instance = None
-    _initialized = False
-    _logger = None
-    _source_token = None
-    _source_id = None
-    _host = None
+    logger = None
+    source_id = None
     
     @classmethod
     def get_instance(cls):
         if cls._instance is None:
-            cls._instance = LoggerFactory()
+            cls._instance = BetterStackLogger()
+            cls._instance._initialize()
         return cls._instance
     
-    def initialize(self):
-        """Initializes the logger with Better Stack configuration."""
-        if self._initialized:
-            return
-        
-        # Create a logger instance
-        logger = logging.getLogger("poe-openai-proxy")
+    def _initialize(self):
+        """Set up Better Stack logging"""
+        # Create the logger
+        self.logger = logging.getLogger("poe-openai-proxy")
         
         try:
-            # Using dictionary-style access (os.environ[]) to ensure it throws exception when not present
-            self._source_token = os.environ["LOGTAIL_SOURCE_TOKEN"]
-            self._source_id = os.environ["LOGTAIL_SOURCE_ID"]
+            # Get required environment variables
+            source_token = os.environ["LOGTAIL_SOURCE_TOKEN"]
+            self.source_id = os.environ["LOGTAIL_SOURCE_ID"]
+            host = os.environ.get("LOGTAIL_HOST", "s1275096.eu-nbg-2.betterstackdata.com")
             
-            # LOGTAIL_HOST is optional with a default value
-            self._host = os.environ.get("LOGTAIL_HOST", "s1275096.eu-nbg-2.betterstackdata.com")
+            # Clean host if needed
+            if host.startswith(("http://", "https://")):
+                host = urlparse(host).netloc
             
-            # Remove any http:// or https:// prefix if present (Better Stack expects host without protocol)
-            if self._host.startswith(("http://", "https://")):
-                parsed_url = urlparse(self._host)
-                self._host = parsed_url.netloc
-            
-            # Initialize Better Stack handler
-            logtail_handler = LogtailHandler(
-                source_token=self._source_token,
-                host=self._host,
-            )
-            
-            # Set formatter to include same format as basic logging
+            # Set up handler
+            handler = LogtailHandler(source_token=source_token, host=host)
             formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            logtail_handler.setFormatter(formatter)
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
             
-            # Add the handler to the logger
-            logger.addHandler(logtail_handler)
-            
-            # Minimal startup logging
-            context = {"source_id": self._source_id}
-            logger.info("Poe API Bridge starting", extra={"context": context})
-            
-            self._initialized = True
-            self._logger = logger
-            
+            # Log startup
+            self.logger.info("Poe API Bridge starting",
+                        extra={"context": {"source_id": self.source_id}})
+                
         except KeyError as e:
-            # This will provide a clear error message about which environment variable is missing
             raise ValueError(f"Required environment variable not set: {e}")
     
-    def get_logger(self):
-        """Returns the initialized logger."""
-        if not self._initialized:
-            self.initialize()
-        return self._logger
-    
-    def log_context(self, **kwargs):
-        """Creates a context dictionary for structured logging, including source_id."""
-        if not self._initialized:
-            self.initialize()
-            
+    def get_context(self, **kwargs):
+        """Create context dictionary with source_id"""
         context = dict(kwargs)
-        context["source_id"] = self._source_id
+        if self.source_id:
+            context["source_id"] = self.source_id
         return {"context": context}
-    
-    @property
-    def source_id(self):
-        """Return the source ID."""
-        if not self._initialized:
-            self.initialize()
-        return self._source_id
-    
-    @property
-    def host(self):
-        """Return the host."""
-        if not self._initialized:
-            self.initialize()
-        return self._host
-    
-    @property
-    def source_token(self):
-        """Return the source token."""
-        if not self._initialized:
-            self.initialize()
-        return self._source_token
 
 
-# Create a dependency to get the logger
+# Get logger instance
 def get_logger():
-    factory = LoggerFactory.get_instance()
-    return factory.get_logger()
+    return BetterStackLogger.get_instance().logger
 
-# Create a dependency to get the context
+# Get context for structured logging
 def get_log_context(**kwargs):
-    factory = LoggerFactory.get_instance()
-    return factory.log_context(**kwargs)
+    return BetterStackLogger.get_instance().get_context(**kwargs)
 
-# Create a dependency to get a configured logger with request ID
+# Create request logger dependency
 async def get_request_logger(request: Request = None):
     logger = get_logger()
     request_id = os.urandom(4).hex()
@@ -164,26 +114,22 @@ async def get_request_logger(request: Request = None):
             "client_ip": request.client.host if request.client else "unknown",
         }
     
-    # Return both the logger and the request_id
     return {
         "logger": logger,
         "request_id": request_id,
         "context": context
     }
 
-# Add request logging middleware with simplified logging
+# Simplified request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
-
     path = request.url.path
     method = request.method
     request_id = os.urandom(4).hex()
-
-    # Get the logger instance
     logger = get_logger()
     
-    # Create contextual information for Better Stack
+    # Create context
     context = {
         "request_id": request_id,
         "path": path,
@@ -192,35 +138,27 @@ async def log_requests(request: Request, call_next):
         "client_ip": request.client.host if request.client else "unknown",
     }
 
-    # No info log for regular requests to reduce verbosity
-
     try:
         response = await call_next(request)
-
+        
+        # Add timing and status info
         process_time = (time.time() - start_time) * 1000
-        formatted_process_time = f"{process_time:.2f}"
-        status_code = response.status_code
-
-        # Add response info to context
         context.update({
-            "status_code": status_code,
+            "status_code": response.status_code,
             "process_time_ms": process_time,
         })
 
-        # Only log errors (4xx and 5xx)
-        if status_code >= 400:
+        # Only log errors
+        if response.status_code >= 400:
             logger.warning(
-                f"[{request_id}] Error: {method} {path} -> {status_code} (took {formatted_process_time} ms)",
+                f"[{request_id}] Error: {method} {path} -> {response.status_code} ({process_time:.2f}ms)",
                 extra=get_log_context(**context)
             )
-        # No info log for successful responses to reduce verbosity
 
         return response
     except Exception as e:
+        # Log exceptions with context
         process_time = (time.time() - start_time) * 1000
-        formatted_process_time = f"{process_time:.2f}"
-
-        # Add error info to context
         context.update({
             "error": str(e),
             "error_type": type(e).__name__,
@@ -228,11 +166,10 @@ async def log_requests(request: Request, call_next):
         })
 
         logger.exception(
-            f"[{request_id}] Exception: {method} {path} - {str(e)} (took {formatted_process_time} ms)",
+            f"[{request_id}] Exception: {method} {path} - {str(e)} ({process_time:.2f}ms)",
             extra=get_log_context(**context)
         )
 
-        # Re-raise the exception for FastAPI's exception handlers
         raise
 
 
@@ -627,7 +564,7 @@ async def chat_completions(
 
     except Exception as e:
         logger.exception(
-            f"Error in chat_completions: {str(e)}", 
+            f"[{request_id}] Error in chat_completions: {str(e)}",
             extra=get_log_context(request_id=request_id, error=str(e), error_type=type(e).__name__)
         )
 
@@ -730,11 +667,11 @@ async def stream_response(
 
     except Exception as e:
         logger.exception(
-            f"Stream error: {str(e)}", 
+            f"[{request_id}] Stream error: {str(e)}",
             extra=get_log_context(
-                request_id=request_id, 
-                model=model, 
-                error=str(e), 
+                request_id=request_id,
+                model=model,
+                error=str(e),
                 error_type=type(e).__name__
             )
         )
@@ -869,7 +806,9 @@ async def stream_response(
     model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str, request_id: str = None
 ):
     """Common streaming function for all response types"""
-    # Get logger instance
+    # Get/create request ID
+    if not request_id:
+        request_id = os.urandom(4).hex()
     logger = get_logger()
     model = normalize_model(model)
     first_chunk = True
@@ -891,7 +830,7 @@ async def stream_response(
             
             # If this is a replace message, reset accumulated response
             if is_replace_response:
-                logger.debug(f"Replacing response with: {message.text}")
+                logger.debug(f"[{request_id}] Replacing response with: {message.text}")
                 accumulated_response = ""  # Reset accumulated response
                 
             chunk = await create_stream_chunk(
@@ -918,7 +857,15 @@ async def stream_response(
             yield b"data: [DONE]\n\n"
 
     except Exception as e:
-        logger.exception(f"Stream error: {str(e)}")
+        logger.exception(
+            f"[{request_id}] Stream error: {str(e)}",
+            extra=get_log_context(
+                request_id=request_id,
+                model=model,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+        )
 
         # Use the helper function to parse error information
         error_message, error_data, error_type, error_id = parse_poe_error(e)
@@ -949,11 +896,7 @@ async def stream_response(
             yield b"data: [DONE]\n\n"
 
 
-async def stream_openai_format(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
-):
-    async for chunk in stream_response(model, messages, api_key, "chat", request_id):
-        yield chunk
+# Only keep one stream_openai_format function
 
 
 async def stream_completions_format(
@@ -968,7 +911,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request, logger_data: dict = Depends(get_request_logger)):
-    logger = logger_data["logger"]
+    request_id = os.urandom(4).hex() if not logger_data else logger_data.get("request_id", os.urandom(4).hex())
     
     # Get host information
     host = request.headers.get("host", "unknown")
@@ -989,22 +932,26 @@ async def v1_root():
 # Add an exception handler for better logging
 @app.exception_handler(Exception)
 async def global_exception_handler(
-    request: Request, 
+    request: Request,
     exc: Exception
 ):
+    # Generate request ID and extract request info
     request_id = os.urandom(4).hex()
     logger = get_logger()
     
+    # Create context with request information
     context = {
         "request_id": request_id,
         "path": request.url.path,
         "method": request.method,
+        "user_agent": request.headers.get("user-agent", "unknown"),
+        "client_ip": request.client.host if request.client else "unknown",
         "error": str(exc),
         "error_type": type(exc).__name__,
     }
     
     logger.exception(
-        f"Exception in {request.method} {request.url.path}: {type(exc).__name__}",
+        f"[{request_id}] Exception in {request.method} {request.url.path}: {type(exc).__name__}",
         extra=get_log_context(**context)
     )
 
@@ -1040,8 +987,8 @@ async def test_logging(
     logger_data: dict = Depends(get_request_logger)
 ):
     """Endpoint to test Better Stack logging"""
-    logger = logger_data["logger"]
-    request_id = logger_data["request_id"]
+    logger = get_logger()
+    request_id = os.urandom(4).hex() if not logger_data else logger_data.get("request_id", os.urandom(4).hex())
     current_time = datetime.now().isoformat()
     
     # Get host information
@@ -1059,20 +1006,10 @@ async def test_logging(
         "message": message,
     }
     
-    # Log with the specified level
+    # Simplified logging with level selection
     log_message = f"[{request_id}] TEST LOG: {message}"
-    
-    if level.lower() == "debug":
-        logger.debug(log_message, extra=get_log_context(**context))
-    elif level.lower() == "warning":
-        logger.warning(log_message, extra=get_log_context(**context))
-    elif level.lower() == "error":
-        logger.error(log_message, extra=get_log_context(**context))
-    elif level.lower() == "critical":
-        logger.critical(log_message, extra=get_log_context(**context))
-    else:
-        # Default to info
-        logger.info(log_message, extra=get_log_context(**context))
+    log_method = getattr(logger, level.lower() if level.lower() in ['debug', 'info', 'warning', 'error', 'critical'] else 'info')
+    log_method(log_message, extra=get_log_context(**context))
     
     return {
         "status": "success",
@@ -1120,7 +1057,17 @@ async def list_models_openai(logger_data: dict = Depends(get_request_logger)):
         {
             "id": "Gemini-2.5-Pro-Exp",
             "context_window": 1000000
-        }
+        },
+        # Claude-Opus-4
+        {
+            "id": "Claude-Opus-4",
+            "context_window": 200000
+        },
+        # Claude-Sonnet-4
+        {
+            "id": "Claude-Sonnet-4",
+            "context_window": 200000
+        },
     ]
     
     # Create timestamp for all models
@@ -1231,17 +1178,16 @@ async def check_auth(
     }
 
 
-@app.get("/api/auth/check")
-async def check_auth(api_key: str = Depends(get_api_key)):
-    """Endpoint to check if authentication is working"""
-    return {"status": "authenticated", "timestamp": datetime.now().isoformat()}
+# Remove duplicate endpoint
 
 
 async def generate_poe_bot_response(
-    model, messages: list[fp.ProtocolMessage], api_key: str
+    model, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
 ):
     model = normalize_model(model)
-    request_id = os.urandom(4).hex()
+    if not request_id:
+        request_id = os.urandom(4).hex()
+    
     logger = get_logger()
     logger.info(f"[{request_id}] Processing request for model {model}")
     accumulated_text = ""
@@ -1272,7 +1218,10 @@ async def generate_poe_bot_response(
         logger.info(f"[{request_id}] Response received: {len(accumulated_text)} chars")
 
     except Exception as e:
-        logger.exception(f"[{request_id}] Error: {str(e)}")
+        logger.exception(
+            f"[{request_id}] Error: {str(e)}",
+            extra=get_log_context(request_id=request_id, model=model, error=str(e), error_type=type(e).__name__)
+        )
         # Use the helper function to parse error information
         error_message, error_data, error_type, error_id = parse_poe_error(e)
 
@@ -1290,9 +1239,9 @@ async def generate_poe_bot_response(
 
 
 async def stream_openai_format(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
 ):
-    async for chunk in stream_response(model, messages, api_key, "chat"):
+    async for chunk in stream_response(model, messages, api_key, "chat", request_id):
         yield chunk
 
 @app.get("/openapi.json")
