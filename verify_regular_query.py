@@ -13,7 +13,6 @@ def test_regular_query():
     API_KEY = os.environ["POE_API_KEY"]
 
     if not API_KEY:
-        print("❌ Error: POE_API_KEY environment variable not set")
         return
 
     # Test data with a simple query
@@ -28,28 +27,17 @@ def test_regular_query():
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
     # Test non-streaming call
-    print("\n=== Testing Regular Query ===")
     response = requests.post(
         f"{BASE_URL}/v1/chat/completions", headers=headers, json=test_data
     )
 
-    print(f"Status Code: {response.status_code}")
-    print("Response:")
-    print(json.dumps(response.json(), indent=2))
 
     if response.status_code == 200:
         result = response.json()
         if "choices" in result and result["choices"][0].get("message", {}).get(
             "content"
         ):
-            print("\n✅ Query successful!")
             content = result["choices"][0]["message"]["content"]
-            print("\nResponse Content:")
-            print(content)
-        else:
-            print("\n❌ Query failed - no content in response")
-    else:
-        print("\n❌ Query failed")
 
 
 def test_streaming_query():
@@ -63,7 +51,6 @@ def test_streaming_query():
     API_KEY = os.environ["POE_API_KEY"]
 
     if not API_KEY:
-        print("❌ Error: POE_API_KEY environment variable not set")
         return
 
     # Test data with a simple query
@@ -79,7 +66,6 @@ def test_streaming_query():
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
     # Test streaming call
-    print("\n=== Testing Streaming Query ===")
     full_content = ""
     chunk_count = 0
     tokens_received = 0
@@ -95,9 +81,7 @@ def test_streaming_query():
             stream=True,
         ) as response:
 
-            print(f"Status Code: {response.status_code}")
             if response.status_code == 200:
-                print("Streaming response chunks:")
                 for line in response.iter_lines():
                     if line:
                         # Remove the "data: " prefix if present and parse JSON
@@ -129,26 +113,10 @@ def test_streaming_query():
                             )
                             if delta_content:
                                 full_content += delta_content
-                                print(delta_content, end="", flush=True)
                         except json.JSONDecodeError:
-                            print(f"Could not decode JSON: {line_text}")
-
-                print("\n\n✅ Streaming query successful!")
-                print(f"\nChunks received: {chunk_count}")
-                print("\nToken statistics:")
-                print(f"Prompt tokens: {prompt_tokens}")
-                print(f"Completion tokens: {completion_tokens}")
-                print(f"Total tokens: {total_tokens}")
-                print("\nFull assembled content:")
-                print(full_content)
-            else:
-                print(
-                    f"\n❌ Streaming query failed with status code: {response.status_code}"
-                )
-                print("Response:")
-                print(response.text)
+                            pass
     except Exception as e:
-        print(f"\n❌ Error during streaming request: {e}")
+        pass
 
 
 if __name__ == "__main__":

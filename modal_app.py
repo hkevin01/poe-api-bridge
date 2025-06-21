@@ -1,25 +1,26 @@
-from modal import Image, App, asgi_app, Secret, Mount
+from modal import Image, App, asgi_app, Secret
 from server import app as fastapi_app
-import os
 
 # Create a Stub object - this is the main entry point for Modal
 app = App("poe-api-bridge")
 
-# Create a custom image with production dependencies
-image = Image.debian_slim().pip_install_from_requirements("requirements-prod.txt")
+# Define requirements
+REQUIREMENTS = [
+    "fastapi==0.115.6",
+    "fastapi-poe==0.0.56",
+    "tiktoken==0.6.0"
+]
 
-# Get the path to the static directory relative to the current file
-static_path = os.path.join(os.path.dirname(__file__), "static")
+# Create a custom image with production dependencies using new API
+image = (
+    Image.debian_slim(python_version="3.12")
+    .pip_install(*REQUIREMENTS)
+    .add_local_dir("static", "/root/static")
+)
 
-
-# The poe-api-bridge-secrets should contain:
-# - LOGTAIL_SOURCE_TOKEN: Better Stack source token
-# - LOGTAIL_SOURCE_ID: Identifier for the log source (e.g., "poe_api_bridge")
-# - LOGTAIL_HOST: Better Stack ingestion host
 @app.cls(
     image=image,
-    secrets=[Secret.from_dotenv(), Secret.from_name("poe-api-bridge-secrets")],
-    mounts=[Mount.from_local_dir(static_path, remote_path="/root/static")]
+    secrets=[Secret.from_dotenv()]
 )
 class PoeApiBridge:
     @asgi_app()

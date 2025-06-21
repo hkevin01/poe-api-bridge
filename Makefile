@@ -1,39 +1,44 @@
-.PHONY: start test test-verbose install deploy clean install-prod install-dev format
+.PHONY: start test test-verbose install deploy clean install-prod install-dev format venv
+
+# Create virtual environment with Python 3.12
+venv:
+	/opt/homebrew/bin/python3.12 -m venv venv
+	@echo "Virtual environment created with Python 3.12. Activate with: source venv/bin/activate"
 
 # Install both production and development dependencies
-install:
-	pip install -e ".[dev]"
+install: venv
+	./venv/bin/pip install -e ".[dev]"
 
 # Install with production dependencies only
-install-prod:
-	pip install -e .
+install-prod: venv
+	./venv/bin/pip install -e .
 
 # Install with dev dependencies (same as install)
-install-dev:
-	pip install -e ".[dev]"
+install-dev: venv
+	./venv/bin/pip install -e ".[dev]"
 
 # Start the development server
 start:
-	python3 local_run.py
+	./venv/bin/python local_run.py
 
 # Start the development server with auto-reload
 start-dev:
-	python3 local_run.py --reload
+	./venv/bin/python local_run.py --reload
 
 # Run tests
 test:
-	pytest
+	./venv/bin/pytest
 
 # Run tests with verbose output
 test-verbose:
-	pytest -v
+	./venv/bin/pytest -v
 
 verify:
-	python3 verify_regular_query.py
+	./venv/bin/python verify_regular_query.py
 
 # Format code with black
 format:
-	black .
+	./venv/bin/black .
 
 # Clean up artifacts
 clean:
@@ -45,4 +50,4 @@ clean:
 
 # Deploy to Modal
 deploy:
-	modal deploy modal_app.py 
+	./venv/bin/modal deploy modal_app.py

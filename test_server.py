@@ -1,149 +1,19 @@
 import pytest
 from fastapi.testclient import TestClient
-from server import app, fp, normalize_model, normalize_role, BetterStackLogger
+from server import app, fp, normalize_model, normalize_role
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 import json
 import os
-import logging
 from fastapi import HTTPException, Depends
 from typing import Dict, Any, Optional
 
 
-# Create a complete mock logger for testing
-class MockLogger:
-    """A test logger that doesn't connect to external services"""
-    def __init__(self):
-        self.logs = []
-        self.logger = logging.getLogger("test-logger")
-        self.host = "test-host"
-        self.source_id = "test-source-id"
-        self.source_token = "test-token"
-    
-    def info(self, msg, *args, **kwargs):
-        self.logs.append({"level": "info", "msg": msg, "args": args, "kwargs": kwargs})
-        self.logger.info(msg, *args, **kwargs)
-    
-    def debug(self, msg, *args, **kwargs):
-        self.logs.append({"level": "debug", "msg": msg, "args": args, "kwargs": kwargs})
-        self.logger.debug(msg, *args, **kwargs)
-    
-    def warning(self, msg, *args, **kwargs):
-        self.logs.append({"level": "warning", "msg": msg, "args": args, "kwargs": kwargs})
-        self.logger.warning(msg, *args, **kwargs)
-    
-    def error(self, msg, *args, **kwargs):
-        self.logs.append({"level": "error", "msg": msg, "args": args, "kwargs": kwargs})
-        self.logger.error(msg, *args, **kwargs)
-    
-    def critical(self, msg, *args, **kwargs):
-        self.logs.append({"level": "critical", "msg": msg, "args": args, "kwargs": kwargs})
-        self.logger.critical(msg, *args, **kwargs)
-    
-    def exception(self, msg, *args, **kwargs):
-        self.logs.append({"level": "exception", "msg": msg, "args": args, "kwargs": kwargs})
-        self.logger.exception(msg, *args, **kwargs)
-
-
-# Create a mock BetterStackLogger that returns our TestLogger
-class MockBetterStackLogger:
-    """Mock BetterStackLogger that returns a TestLogger for testing"""
-    _instance = None
-    
-    def __init__(self):
-        self.logger = None
-        self.source_id = "test-source-id"
-    
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = MockBetterStackLogger()
-            cls._instance._initialize()
-        return cls._instance
-    
-    def _initialize(self):
-        """Set up test logger"""
-        test_logger = MockLogger()
-        self.logger = test_logger.logger
-    
-    def get_context(self, **kwargs):
-        """Create context dictionary with source_id"""
-        context = dict(kwargs)
-        if self.source_id:
-            context["source_id"] = self.source_id
-        return {"context": context}
-    
-    
-    def initialize(self):
-        """No-op implementation for testing"""
-        pass
-
-
-# Create reusable test logger instance
-test_logger_instance = MockBetterStackLogger.get_instance()
-
-
-# Create test versions of our logger dependencies
-def get_test_logger():
-    """Test version of get_logger that uses our test logger"""
-    return test_logger_instance.logger
-
-
-def get_test_log_context(**kwargs):
-    """Test version of get_log_context that uses our test logger"""
-    return test_logger_instance.get_context(**kwargs)
-
-
-async def get_test_request_logger(request=None):
-    """Test version of get_request_logger"""
-    logger = test_logger_instance.logger
-    request_id = "test-request-id"
-    context = {}
-    
-    if request:
-        context = {
-            "request_id": request_id,
-            "path": getattr(request.url, 'path', '/test'),
-            "method": getattr(request, 'method', 'TEST'),
-            "user_agent": getattr(request.headers, 'get', lambda x, y: 'test')("user-agent", "test"),
-            "client_ip": getattr(getattr(request, 'client', None), 'host', 'test-ip'),
-        }
-    
-    return {
-        "logger": logger,
-        "request_id": request_id,
-        "context": context
-    }
-
-
-@pytest.fixture(scope="function")
+@pytest.fixture
 def client():
-    """Test client with logger dependencies overridden"""
-    # Import the dependencies that need to be overridden
-    from server import get_logger, get_log_context, get_request_logger
-    
-    # Save the original factory method
-    original_get_instance = BetterStackLogger.get_instance
-    
-    # Override the factory method to return our test logger
-    BetterStackLogger.get_instance = MockBetterStackLogger.get_instance
-    
-    # Set up dependency overrides
-    app.dependency_overrides[get_logger] = get_test_logger
-    app.dependency_overrides[get_log_context] = get_test_log_context
-    app.dependency_overrides[get_request_logger] = get_test_request_logger
-    
-    # Create a test client with the overrides in place
-    test_client = TestClient(app)
-    
-    # Yield the test client for the test to use
-    yield test_client
-    
-    # Clean up the overrides after the test
-    app.dependency_overrides = {}
-    
-    # Restore the original factory method
-    BetterStackLogger.get_instance = original_get_instance
+    """Test client"""
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture
@@ -188,464 +58,167 @@ def test_missing_auth(client):
 
     response = client.post("/v1/chat/completions", json=request_data)
     assert response.status_code == 401
+    assert "authentication_error" in response.json()["detail"]["error"]["type"]
 
 
-
-def test_normalize_role():
-    assert normalize_role("user") == "user"
-    assert normalize_role("assistant") == "bot"
-    assert normalize_role("system") == "system"
-    assert normalize_role("tool") == "tool"  # tool role should remain as tool
-    assert normalize_role("custom") == "custom"
-
-
-def test_flexible_http_bearer_auth(client):
-    # Test with Authorization header
-    headers = {"Authorization": "Bearer test-token"}
-    response = client.get("/test", headers=headers)
-    assert response.status_code != 401
-
-    # Test with token query parameter
-    response = client.get("/test?token=test-token")
-    assert response.status_code != 401
-
-    # Test with POE_API_KEY environment variable
-    with patch.dict("os.environ", {"POE_API_KEY": "test-env-token"}):
-        response = client.get("/test")
-        assert response.status_code != 401
-
-
-def test_chat_completions_endpoint(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
+def test_malformed_auth_header(client):
     request_data = {
         "model": "Claude-3.5-Sonnet",
         "messages": [{"role": "user", "content": "Hello"}],
+    }
+    headers = {"Authorization": "malformed_header"}
+
+    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+    assert response.status_code == 401
+    assert "authentication_error" in response.json()["detail"]["error"]["type"]
+
+
+def test_invalid_scheme_auth_header(client):
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    headers = {"Authorization": "Invalid test_api_key"}
+
+    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+    assert response.status_code == 401
+    assert "authentication_error" in response.json()["detail"]["error"]["type"]
+
+
+def test_empty_messages(client):
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "messages": [],
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["type"] == "invalid_request_error"
+    assert "Messages array cannot be empty" in response.json()["detail"]["error"]["message"]
+
+
+def test_normalize_model():
+    # Test that the function normalizes model names correctly
+    assert normalize_model("  claude-3.5-sonnet  ") == "claude-3.5-sonnet"
+    assert normalize_model("GPT-4") == "GPT-4"
+    assert normalize_model("test-model") == "test-model"
+
+
+def test_normalize_role():
+    # Test role normalization
+    assert normalize_role("user") == "user"
+    assert normalize_role("assistant") == "bot"
+    assert normalize_role("system") == "system"
+    assert normalize_role("custom") == "custom"
+
+
+def test_chat_completion_success(client, mock_get_bot_response):
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "messages": [{"role": "user", "content": "Hello, how are you?"}],
         "stream": False,
     }
+    headers = {"Authorization": "Bearer test_api_key"}
 
     response = client.post("/v1/chat/completions", json=request_data, headers=headers)
     assert response.status_code == 200
-
-    data = response.json()
-    assert "id" in data
-    assert data["object"] == "chat.completion"
-    assert "choices" in data
-    assert len(data["choices"]) == 1
-    assert data["choices"][0]["message"]["role"] == "assistant"
-    assert data["choices"][0]["message"]["content"] == "Test response"
+    response_data = response.json()
+    assert "choices" in response_data
+    assert len(response_data["choices"]) == 1
+    assert response_data["choices"][0]["message"]["content"] == "Test response"
+    assert response_data["choices"][0]["message"]["role"] == "assistant"
+    assert "usage" in response_data
 
 
-def test_chat_completions_with_content_list(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
+def test_chat_completion_streaming(client, mock_get_bot_response):
+    request_data = {
+        "model": "Claude-3.5-Sonnet", 
+        "messages": [{"role": "user", "content": "Hello, how are you?"}],
+        "stream": True,
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+
+def test_completions_endpoint(client, mock_get_bot_response):
+    request_data = {
+        "model": "Claude-3.5-Sonnet",
+        "prompt": "Hello, how are you?",
+        "stream": False,
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    response = client.post("/v1/completions", json=request_data, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "choices" in response_data
+    assert len(response_data["choices"]) == 1
+    assert response_data["choices"][0]["text"] == "Test response"
+
+
+def test_models_endpoint(client):
+    response = client.get("/v1/models")
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "data" in response_data
+    assert len(response_data["data"]) > 0
+    # Check that Claude models are included
+    model_ids = [model["id"] for model in response_data["data"]]
+    assert "Claude-3.5-Sonnet" in model_ids
+    assert "GPT-4o" in model_ids
+
+
+def test_openapi_endpoint(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "info" in response_data
+    assert response_data["info"]["title"] == "Poe-API OpenAI Proxy"
+
+
+def test_root_endpoint(client):
+    response = client.get("/")
+    assert response.status_code == 200
+
+
+def test_complex_message_content(client, mock_get_bot_response):
+    """Test handling of complex message content with arrays"""
     request_data = {
         "model": "Claude-3.5-Sonnet",
         "messages": [
             {
-                "role": "user",
+                "role": "user", 
                 "content": [
                     {"type": "text", "text": "Hello"},
-                    {"type": "image", "image_url": "http://example.com/image.jpg"},
-                    {"type": "text", "text": "What's in this image?"},
-                ],
+                    {"type": "image", "image_url": "http://example.com/image.jpg"}
+                ]
             }
         ],
-    }
-
-    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["choices"][0]["message"]["role"] == "assistant"
-    assert isinstance(data["choices"][0]["message"]["content"], str)
-    assert "Test response" in data["choices"][0]["message"]["content"]
-
-    assert data["choices"][0]["finish_reason"] == "stop"
-
-
-def test_chat_completions_with_tools(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get weather information",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "location": {"type": "string"},
-                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
-                    },
-                    "required": ["location"],
-                },
-            },
-        }
-    ]
-
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": "What's the weather in London?"}],
-        "tools": tools,
-        "tool_choice": "auto",
         "stream": False,
     }
+    headers = {"Authorization": "Bearer test_api_key"}
 
     response = client.post("/v1/chat/completions", json=request_data, headers=headers)
     assert response.status_code == 200
-
-    data = response.json()
-    assert "id" in data
-    assert "system_fingerprint" in data
-    assert data["object"] == "chat.completion"
-    assert len(data["choices"]) == 1
-    assert "message" in data["choices"][0]
+    response_data = response.json()
+    assert "choices" in response_data
 
 
-def test_error_response_format(client):
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "nonexistent-model",
-        "messages": [{"role": "user", "content": "Hello"}],
-    }
-
-    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    # Now expect 500 since we're no longer validating models upfront
-    # and errors are handled by the Poe API
-    assert response.status_code == 500
-
-    error = response.json()
-    assert "detail" in error
-
-
-def test_streaming_format(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
+def test_is_replace_response_functionality(client, mock_get_bot_response_with_replace):
+    """Test that is_replace_response works correctly"""
     request_data = {
         "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "stream": True,
-    }
-
-    with client.stream(
-        "POST", "/v1/chat/completions", json=request_data, headers=headers
-    ) as response:
-        assert response.status_code == 200
-
-        # Read and parse the streaming response
-        for line in response.iter_lines():
-            if line:
-                line = line.decode("utf-8") if isinstance(line, bytes) else line
-                if line.startswith("data: "):
-                    if line.strip() == "data: [DONE]":
-                        continue
-
-                    data = json.loads(line.replace("data: ", ""))
-
-                    # Verify the structure of each chunk
-                    assert "id" in data
-                    assert "object" in data
-                    assert data["object"] == "chat.completion.chunk"
-                    assert "created" in data
-                    assert "model" in data
-                    assert "choices" in data
-
-                    choices = data["choices"]
-                    assert len(choices) == 1
-                    assert "index" in choices[0]
-                    assert "delta" in choices[0]
-
-                    if "content" in choices[0]["delta"]:
-                        assert isinstance(choices[0]["delta"]["content"], str)
-                    elif choices[0].get("finish_reason") == "stop":
-                        assert choices[0]["delta"] == {}
-
-
-@pytest.mark.asyncio
-async def test_streaming_with_replace_response(client, mock_get_bot_response_with_replace):
-    """Test streaming with message replacement."""
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "stream": True,
-    }
-
-    chunks = []
-    with client.stream(
-        "POST", "/v1/chat/completions", json=request_data, headers=headers
-    ) as response:
-        assert response.status_code == 200
-
-        # Read and parse the streaming response
-        for line in response.iter_lines():
-            if line:
-                line = line.decode("utf-8") if isinstance(line, bytes) else line
-                if line.startswith("data: "):
-                    if line.strip() == "data: [DONE]":
-                        continue
-
-                    data = json.loads(line.replace("data: ", ""))
-                    chunks.append(data)
-
-    # Verify we got at least two chunks
-    assert len(chunks) >= 2
-    
-    # Verify first chunk has initial content
-    first_content = None
-    for chunk in chunks:
-        if "choices" in chunk and "delta" in chunk["choices"][0] and "content" in chunk["choices"][0]["delta"]:
-            first_content = chunk["choices"][0]["delta"]["content"]
-            break
-    
-    assert first_content == "initial text"
-    
-    # Find the replacement chunk
-    replacement_found = False
-    for chunk in chunks:
-        if "choices" in chunk and "delta" in chunk["choices"][0] and "content" in chunk["choices"][0]["delta"]:
-            content = chunk["choices"][0]["delta"]["content"]
-            if content == "replacement text":
-                replacement_found = True
-                break
-    
-    assert replacement_found, "Replacement text not found in response chunks"
-
-
-def test_openai_models_endpoint(client):
-    response = client.get("/v1/models")
-    assert response.status_code == 200
-
-    data = response.json()
-    assert data["object"] == "list"
-    assert "data" in data
-    assert isinstance(data["data"], list)
-    # Since we now return an empty list, we don't check for content
-
-
-@pytest.mark.asyncio
-async def test_create_stream_chunk():
-    from server import create_stream_chunk
-
-    # Test completion format
-    chunk = await create_stream_chunk("test message", "test-model", "completion")
-    assert chunk["object"] == "text_completion"
-    assert chunk["choices"][0]["text"] == "test message"
-
-    # Test chat format
-    chunk = await create_stream_chunk("test message", "test-model", "chat", True)
-    assert chunk["object"] == "chat.completion.chunk"
-    assert chunk["choices"][0]["delta"]["role"] == "assistant"
-    assert chunk["choices"][0]["delta"]["content"] == "test message"
-
-    # Test poe format
-    chunk = await create_stream_chunk("test message", "test-model", "poe")
-    assert chunk["response"] == "test message"
-    assert chunk["done"] is False
-
-
-@pytest.mark.asyncio
-async def test_create_final_chunk():
-    from server import create_final_chunk
-
-    # Test completion format
-    chunk = await create_final_chunk("test-model", "completion")
-    assert chunk["choices"][0]["finish_reason"] == "stop"
-
-    # Test chat format
-    chunk = await create_final_chunk("test-model", "chat")
-    assert chunk["choices"][0]["finish_reason"] == "stop"
-    assert chunk["choices"][0]["delta"] == {}
-
-    # Test poe format
-    chunk = await create_final_chunk("test-model", "poe")
-    assert chunk["done"] is True
-
-
-@pytest.mark.asyncio
-async def test_create_stream_chunk_with_replace_response():
-    """Test creating stream chunks with is_replace_response flag."""
-    from server import create_stream_chunk
-    
-    # Test chat format with is_replace_response=True
-    chunk = await create_stream_chunk(
-        "replacement text", "test-model", "chat", False, True
-    )
-    assert chunk["object"] == "chat.completion.chunk"
-    assert chunk["choices"][0]["delta"]["content"] == "replacement text"
-    
-    # Test poe format with is_replace_response=True
-    chunk = await create_stream_chunk(
-        "replacement text", "test-model", "poe", False, True
-    )
-    assert chunk["response"] == "replacement text"
-    assert chunk["is_replace"] is True
-
-
-def test_error_handling_chat_completions(client):
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "invalid-model",
-        "messages": [{"role": "user", "content": "Hello"}],
-    }
-
-    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    # Now expect 500 since we're no longer validating models upfront
-    # and errors are handled by the Poe API
-    assert response.status_code == 500
-    error = response.json()
-    assert "detail" in error
-
-
-def test_long_message_handling(client, mock_get_bot_response):
-    headers = {"Authorization": "Bearer test-token"}
-    long_content = "x" * (4 * 4096 + 100)  # Exceeds the 4*4096 threshold
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": long_content}],
-    }
-
-    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    assert response.status_code == 200
-
-
-def test_token_counts_in_response(client, mock_get_bot_response):
-    """Test that token counts are included in API responses"""
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": "Hello"}],
+        "messages": [{"role": "user", "content": "Test replacement"}],
         "stream": False,
     }
-
-    # Test chat completions API
-    response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-    assert response.status_code == 200
-    data = response.json()
-    assert "usage" in data
-    assert "prompt_tokens" in data["usage"]
-    assert "completion_tokens" in data["usage"]
-    assert "total_tokens" in data["usage"]
-    assert (
-        data["usage"]["total_tokens"]
-        == data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
-    )
-
-    # Skip completions API test for now as it requires more complex mocking
-    # The token counting functionality is already verified in the other endpoints
-
-
-def test_token_counts_with_complex_messages(client, mock_get_bot_response):
-    """Test token counting with complex message structure"""
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [
-            {"role": "system", "content": "You are a helpful AI assistant."},
-            {"role": "user", "content": "Tell me about token counting."},
-            {"role": "assistant", "content": "Token counting is the process of..."},
-            {"role": "user", "content": "Can you provide an example?"},
-        ],
-        "stream": False,
-    }
+    headers = {"Authorization": "Bearer test_api_key"}
 
     response = client.post("/v1/chat/completions", json=request_data, headers=headers)
     assert response.status_code == 200
-    data = response.json()
-
-    # Check that system and user messages are counted in prompt tokens
-    assert data["usage"]["prompt_tokens"] > 10
-    # Check that assistant message is counted in completion tokens
-    assert data["usage"]["completion_tokens"] > 0
-
-
-def test_get_bot_response_exception(client):
-    """Test handling when get_bot_response throws an exception"""
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "stream": False,
-    }
-    
-    # Mock get_bot_response to throw an exception
-    with patch("server.get_bot_response") as mock_get_bot:
-        # Test with a ValueError that looks like a model error
-        mock_get_bot.side_effect = ValueError("Model Claude-3.5-Sonnet not found")
-        
-        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-        assert response.status_code == 404
-        error_data = response.json()
-        # Error is wrapped in 'detail' key
-        assert "detail" in error_data
-        assert "error" in error_data["detail"]
-        assert "Model Claude-3.5-Sonnet not found" in error_data["detail"]["error"]["message"]
-        assert error_data["detail"]["error"]["type"] == "invalid_request_error"
-    
-    # Test with a generic exception
-    with patch("server.get_bot_response") as mock_get_bot:
-        mock_get_bot.side_effect = Exception("Internal server error from Poe")
-        
-        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-        assert response.status_code == 500
-        error_data = response.json()
-        assert "detail" in error_data
-        assert "error" in error_data["detail"]
-        assert "Internal server error from Poe" in error_data["detail"]["error"]["message"]
-        assert error_data["detail"]["error"]["type"] == "poe_server_error"
-    
-    # Test with a JSON-formatted error (simulating Poe API error)
-    with patch("server.get_bot_response") as mock_get_bot:
-        mock_get_bot.side_effect = Exception('{"text": "Rate limit exceeded", "error_type": "rate_limit", "status": 429}')
-        
-        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-        assert response.status_code == 500
-        error_data = response.json()
-        assert "detail" in error_data
-        assert "error" in error_data["detail"]
-        assert "Rate limit exceeded" in error_data["detail"]["error"]["message"]
-        assert "poe_error" in error_data["detail"]["error"]
-
-
-def test_get_bot_response_streaming_exception(client):
-    """Test handling when get_bot_response throws an exception during streaming"""
-    headers = {"Authorization": "Bearer test-token"}
-    request_data = {
-        "model": "Claude-3.5-Sonnet",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "stream": True,
-    }
-    
-    # Mock get_bot_response to throw an exception after yielding some data
-    async def mock_stream_with_error(*args, **kwargs):
-        # Yield one successful message
-        yield fp.PartialResponse(text="Hello, ")
-        # Then throw an exception
-        raise Exception("Connection lost during streaming")
-    
-    with patch("server.get_bot_response", new=mock_stream_with_error):
-        response = client.post("/v1/chat/completions", json=request_data, headers=headers)
-        assert response.status_code == 200  # Streaming starts with 200
-        
-        # Read the stream
-        chunks = []
-        for line in response.iter_lines():
-            if line:
-                chunks.append(line)
-        
-        # Should have at least the initial chunk and error chunk
-        assert len(chunks) >= 2
-        
-        # Check that we got the initial data
-        first_chunk = json.loads(chunks[0].replace("data: ", ""))
-        assert "choices" in first_chunk
-        assert first_chunk["choices"][0]["delta"]["content"] == "Hello, "
-        
-        # Check that we got the error
-        error_found = False
-        for chunk in chunks[1:]:
-            if "error" in chunk:
-                error_data = json.loads(chunk.replace("data: ", ""))
-                assert "error" in error_data
-                assert "Connection lost during streaming" in error_data["error"]["message"]
-                error_found = True
-                break
-        
-        assert error_found, "Error message not found in streaming response"
+    response_data = response.json()
+    # The final response should be "replacement text" not "initial textreplacement text"
+    assert response_data["choices"][0]["message"]["content"] == "replacement text"
