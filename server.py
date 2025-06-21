@@ -8,6 +8,9 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
+import base64
+import io
+import httpx
 
 # Third-party imports
 import fastapi_poe as fp
@@ -271,6 +274,113 @@ def parse_poe_error(error: Exception) -> tuple[str, dict, str, str]:
     return error_message, error_data, error_type, error_id
 
 
+async def process_base64_image(data_url: str, api_key: str) -> fp.Attachment:
+    """Convert base64 data URL to Poe attachment"""
+    try:
+        # Parse data URL: data:image/jpeg;base64,/9j/4AAQ...
+        if not data_url.startswith("data:"):
+            raise ValueError("Invalid data URL format")
+        
+        header, data = data_url.split(";base64,", 1)
+        mime_type = header[5:]  # Remove 'data:'
+        
+        # Decode base64 data
+        file_data = base64.b64decode(data)
+        
+        # Determine file extension from MIME type
+        extension_map = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+            "application/pdf": "pdf"
+        }
+        
+        extension = extension_map.get(mime_type, "bin")
+        file_name = f"uploaded_file.{extension}"
+        
+        # Upload to Poe using raw bytes
+        attachment = await fp.upload_file(
+            file=file_data,
+            file_name=file_name,
+            api_key=api_key
+        )
+        
+        return attachment
+        
+    except Exception as e:
+        raise ValueError(f"Failed to process base64 image: {str(e)}")
+
+
+async def process_image_url(url: str, api_key: str) -> fp.Attachment:
+    """Convert image URL to Poe attachment"""
+    try:
+        # Upload via URL (Poe will download it)
+        attachment = await fp.upload_file(
+            file_url=url,
+            api_key=api_key
+        )
+        
+        return attachment
+        
+    except Exception as e:
+        raise ValueError(f"Failed to process image URL: {str(e)}")
+
+
+async def convert_openai_content_to_poe(content: List[Dict], api_key: str) -> tuple[str, List[fp.Attachment]]:
+    """
+    Convert OpenAI message content array to Poe format.
+    Returns (text_content, attachments_list)
+    """
+    text_parts = []
+    attachments = []
+    
+    for comp in content:
+        if isinstance(comp, dict):
+            if comp.get("type") == "text" and "text" in comp:
+                text_parts.append(comp["text"])
+                
+            elif comp.get("type") == "image_url":
+                image_url_obj = comp.get("image_url", {})
+                url = image_url_obj.get("url", "")
+                
+                if url:
+                    try:
+                        if url.startswith("data:"):
+                            # Base64 encoded image
+                            attachment = await process_base64_image(url, api_key)
+                            attachments.append(attachment)
+                            text_parts.append(f"[Uploaded Image: {attachment.name}]")
+                        else:
+                            # External URL
+                            attachment = await process_image_url(url, api_key)
+                            attachments.append(attachment)
+                            text_parts.append(f"[Image from URL: {attachment.name}]")
+                    except ValueError as e:
+                        # Fallback to text representation if upload fails
+                        text_parts.append(f"[Image (upload failed): {url}]")
+                        print(f"Warning: {e}")
+                        
+            elif comp.get("type") == "image":
+                # Handle legacy "image" type
+                image_url = comp.get("image_url", "")
+                if image_url:
+                    try:
+                        if image_url.startswith("data:"):
+                            attachment = await process_base64_image(image_url, api_key)
+                            attachments.append(attachment)
+                            text_parts.append(f"[Uploaded Image: {attachment.name}]")
+                        else:
+                            attachment = await process_image_url(image_url, api_key)
+                            attachments.append(attachment)
+                            text_parts.append(f"[Image from URL: {attachment.name}]")
+                    except ValueError as e:
+                        text_parts.append(f"[Image: {image_url}]")
+                        print(f"Warning: {e}")
+    
+    return " ".join(text_parts), attachments
+
+
 def count_tokens(text: str, model: str = None) -> int:
     """Count the number of tokens in a string using the tiktoken library
 
@@ -344,21 +454,34 @@ async def chat_completions(
         messages = []
         for msg in request.messages:
             role = normalize_role(msg.role)
-
             content = msg.content or ""
+            attachments = []
 
             if isinstance(content, list):
-                # Join list elements into a single string
-                parts = []
-                for comp in content:
-                    if isinstance(comp, dict):
-                        if comp.get("type") == "text" and "text" in comp:
-                            parts.append(comp["text"])
-                        elif comp.get("type") == "image":
-                            parts.append(f"[Image: {comp.get('image_url', '')}]")
-                content = " ".join(parts)
+                # Handle multimodal content with files/images
+                try:
+                    text_content, file_attachments = await convert_openai_content_to_poe(content, api_key)
+                    content = text_content
+                    attachments = file_attachments
+                except Exception as e:
+                    # Fallback to simple text extraction if file processing fails
+                    print(f"Warning: File processing failed: {e}")
+                    parts = []
+                    for comp in content:
+                        if isinstance(comp, dict):
+                            if comp.get("type") == "text" and "text" in comp:
+                                parts.append(comp["text"])
+                            elif comp.get("type") == "image_url":
+                                parts.append(f"[Image: {comp.get('image_url', {}).get('url', '')}]")
+                            elif comp.get("type") == "image":
+                                parts.append(f"[Image: {comp.get('image_url', '')}]")
+                    content = " ".join(parts)
 
-            messages.append(fp.ProtocolMessage(role=role, content=content))
+            # Create ProtocolMessage with or without attachments
+            if attachments:
+                messages.append(fp.ProtocolMessage(role=role, content=content, attachments=attachments))
+            else:
+                messages.append(fp.ProtocolMessage(role=role, content=content))
 
         # If streaming is requested, use StreamingResponse
         if request.stream:
@@ -959,3 +1082,4 @@ async def get_openapi_json():
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
+

@@ -33,9 +33,6 @@ test:
 test-verbose:
 	./venv/bin/pytest -v
 
-verify:
-	./venv/bin/python verify_regular_query.py
-
 # Format code with black
 format:
 	./venv/bin/black .
