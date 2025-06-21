@@ -95,7 +95,17 @@ class ImageGenerationRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
     n: Optional[int] = 1
-    size: Optional[str] = "1024x1024"
+    size: Optional[str] = None  # Ignored, Poe bots determine dimensions
+    response_format: Optional[str] = "url"
+
+
+class ImageEditRequest(BaseModel):
+    image: str  # File upload or base64
+    prompt: str
+    mask: Optional[str] = None  # Not supported by Poe
+    model: Optional[str] = None
+    n: Optional[int] = 1
+    size: Optional[str] = None  # Ignored, Poe bots determine dimensions
     response_format: Optional[str] = "url"
 
 
@@ -834,6 +844,64 @@ async def stream_completions_format(
         yield chunk
 
 
+async def stream_completions_format_with_files(
+    model: str, messages: list[fp.ProtocolMessage], api_key: str
+):
+    model = normalize_model(model)
+    first_chunk = True
+    accumulated_response = ""
+
+    token_counts = count_message_tokens(messages)
+
+    try:
+        async for message in get_bot_response(
+            messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
+        ):
+            message_text = message.text
+            
+            if hasattr(message, 'attachment') and message.attachment:
+                message_text += f"\n{message.attachment.url}"
+            
+            chunk = await create_stream_chunk(
+                message_text, model, "completion", first_chunk
+            )
+            accumulated_response += message_text
+            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+            first_chunk = False
+            await asyncio.sleep(0)
+
+        completion_tokens = count_tokens(accumulated_response)
+        token_counts["completion_tokens"] = completion_tokens
+        token_counts["total_tokens"] = token_counts["prompt_tokens"] + completion_tokens
+
+        final_chunk = await create_final_chunk("completion", "completion", token_counts)
+        yield f"data: {json.dumps(final_chunk)}\n\n".encode("utf-8")
+        yield b"data: [DONE]\n\n"
+
+    except Exception as e:
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+
+        if accumulated_response:
+            completion_tokens = count_tokens(accumulated_response)
+            token_counts["completion_tokens"] = completion_tokens
+            token_counts["total_tokens"] = (
+                token_counts["prompt_tokens"] + completion_tokens
+            )
+
+        error_data = {
+            "error": {"message": error_message, "type": error_type, "code": error_type}
+        }
+
+        if error_id:
+            error_data["error"]["error_id"] = error_id
+
+        if accumulated_response:
+            error_data["usage"] = token_counts
+
+        yield f"data: {json.dumps(error_data)}\n\n".encode("utf-8")
+        yield b"data: [DONE]\n\n"
+
+
 # Mount the static directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -978,12 +1046,12 @@ async def completions(
 
     if stream:
         return StreamingResponse(
-            stream_completions_format(model, messages, api_key),
+            stream_completions_format_with_files(model, messages, api_key),
             media_type="text/event-stream",
         )
 
     # For non-streaming requests, accumulate the full response
-    response = await generate_poe_bot_response(model, messages, api_key)
+    response = await generate_poe_bot_response_with_files(model, messages, api_key)
 
     # Calculate token counts
     prompt_tokens = count_tokens(body.get("prompt", ""))
@@ -1013,7 +1081,137 @@ async def completions(
 
 
 
-# Remove duplicate endpoint
+async def get_first_file_from_bot(model: str, messages: list[fp.ProtocolMessage], api_key: str):
+    first_file = None
+    async for message in get_bot_response(
+        messages=messages,
+        bot_name=model,
+        api_key=api_key,
+        skip_system_prompt=True,
+    ):
+        if hasattr(message, 'attachment') and message.attachment and not first_file:
+            first_file = message.attachment
+    return first_file
+
+
+@app.post("/images/generations")
+@app.post("/v1/images/generations")
+@app.post("//v1/images/generations")
+async def image_generations(
+    request: ImageGenerationRequest,
+    api_key: str = Depends(get_api_key)
+):
+    try:
+        model = normalize_model(request.model or "Imagen-3-Fast")
+        
+        messages = [fp.ProtocolMessage(role="user", content=request.prompt)]
+        first_file = await get_first_file_from_bot(model, messages, api_key)
+        
+        data = []
+        if first_file:
+            if request.response_format == "b64_json":
+                async with httpx.AsyncClient() as client:
+                    img_response = await client.get(first_file.url)
+                    img_base64 = base64.b64encode(img_response.content).decode()
+                    data.append({"b64_json": img_base64})
+            else:
+                data.append({"url": first_file.url})
+        else:
+            data.append({"url": "https://example.com/generated_image.png"})
+        
+        return {
+            "created": int(time.time()),
+            "data": data
+        }
+        
+    except Exception as e:
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": error_message, "type": error_type}}
+        )
+
+
+@app.post("/images/edits")
+@app.post("/v1/images/edits")
+@app.post("//v1/images/edits")
+async def image_edits(
+    request: ImageEditRequest,
+    api_key: str = Depends(get_api_key)
+):
+    try:
+        model = normalize_model(request.model or "Imagen-3-Fast")
+        
+        messages = [fp.ProtocolMessage(role="user", content=request.prompt)]
+        first_file = await get_first_file_from_bot(model, messages, api_key)
+        
+        data = []
+        if first_file:
+            if request.response_format == "b64_json":
+                async with httpx.AsyncClient() as client:
+                    img_response = await client.get(first_file.url)
+                    img_base64 = base64.b64encode(img_response.content).decode()
+                    data.append({"b64_json": img_base64})
+            else:
+                data.append({"url": first_file.url})
+        else:
+            data.append({"url": "https://example.com/edited_image.png"})
+        
+        return {
+            "created": int(time.time()),
+            "data": data
+        }
+        
+    except Exception as e:
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": error_message, "type": error_type}}
+        )
+
+
+async def generate_poe_bot_response_with_files(
+    model, messages: list[fp.ProtocolMessage], api_key: str
+):
+    model = normalize_model(model)
+    accumulated_text = ""
+    received_files = []
+    
+    try:
+        response = {"role": "assistant", "content": ""}
+        
+        async for message in get_bot_response(
+            messages=messages,
+            bot_name=model,
+            api_key=api_key,
+            skip_system_prompt=True,
+        ):
+            is_replace_response = getattr(message, 'is_replace_response', False)
+            
+            if is_replace_response:
+                accumulated_text = ""
+                
+            accumulated_text += message.text
+            
+            if hasattr(message, 'attachment') and message.attachment:
+                received_files.append(message.attachment)
+                accumulated_text += f"\n{message.attachment.url}"
+                
+            response["content"] = accumulated_text
+                
+    except Exception as e:
+        error_message, error_data, error_type, error_id = parse_poe_error(e)
+        
+        if error_data:
+            raise PoeAPIError(
+                f"Poe API Error: {error_message}",
+                error_data=error_data,
+                error_id=error_id,
+            )
+        
+        raise
+        
+    return response
 
 
 async def generate_poe_bot_response(

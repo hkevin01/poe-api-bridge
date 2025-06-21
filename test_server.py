@@ -9,6 +9,38 @@ from fastapi import HTTPException, Depends
 from typing import Dict, Any, Optional
 
 
+@pytest.fixture(autouse=True)
+def mock_all_external_calls():
+    """Auto-mock all external API calls to prevent real requests"""
+    with patch("server.get_bot_response") as mock_bot, \
+         patch("fastapi_poe.upload_file") as mock_upload, \
+         patch("httpx.AsyncClient") as mock_client:
+        
+        # Default mock for get_bot_response
+        async def default_bot_response(*args, **kwargs):
+            response = fp.PartialResponse(text="Test response")
+            yield response
+        mock_bot.side_effect = default_bot_response
+        
+        # Default mock for file upload
+        mock_upload.return_value = fp.Attachment(
+            url="https://poe.com/test-file.jpg",
+            content_type="image/jpeg",
+            name="test-file.jpg"
+        )
+        
+        # Default mock for HTTP client
+        mock_response = MagicMock()
+        mock_response.content = b"fake_http_response_data"
+        mock_client.return_value.__aenter__.return_value.get.return_value = mock_response
+        
+        yield {
+            'bot_response': mock_bot,
+            'upload_file': mock_upload,
+            'http_client': mock_client
+        }
+
+
 @pytest.fixture
 def client():
     """Test client"""
@@ -17,7 +49,8 @@ def client():
 
 
 @pytest.fixture
-def mock_get_bot_response():
+def mock_get_bot_response(mock_all_external_calls):
+    """Override default bot response for specific tests"""
     async def mock_response(
         messages, bot_name, api_key, skip_system_prompt=False, base_url=None
     ):
@@ -25,12 +58,12 @@ def mock_get_bot_response():
         response = fp.PartialResponse(text="Test response")
         yield response
 
-    with patch("server.get_bot_response", mock_response):
-        yield mock_response
+    mock_all_external_calls['bot_response'].side_effect = mock_response
+    return mock_all_external_calls['bot_response']
 
 
 @pytest.fixture
-def mock_get_bot_response_with_replace():
+def mock_get_bot_response_with_replace(mock_all_external_calls):
     """Mock that simulates a response with is_replace_response=True."""
     async def mock_response(
         messages, bot_name, api_key, skip_system_prompt=False, base_url=None
@@ -46,8 +79,8 @@ def mock_get_bot_response_with_replace():
         )
         yield replacement
     
-    with patch("server.get_bot_response", mock_response):
-        yield mock_response
+    mock_all_external_calls['bot_response'].side_effect = mock_response
+    return mock_all_external_calls['bot_response']
 
 
 def test_missing_auth(client):
@@ -838,3 +871,177 @@ async def test_upload_file_error_handling(mock_upload_file):
         
         # Verify upload_file was called
         mock_upload_file.assert_called_once_with(file=mock_file, api_key=api_key)
+
+
+def test_image_generations_endpoint(client, mock_all_external_calls):
+    request_data = {
+        "prompt": "A beautiful sunset",
+        "model": "Imagen-3-Fast",
+        "n": 1,
+        "response_format": "url"
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response with attachment
+    mock_message = MagicMock()
+    mock_message.text = "Here's your image:"
+    mock_message.attachment = fp.Attachment(
+        url="https://poe.com/image.jpg",
+        content_type="image/jpeg",
+        name="image.jpg"
+    )
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/images/generations", json=request_data, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "created" in response_data
+    assert "data" in response_data
+    assert len(response_data["data"]) == 1
+    assert response_data["data"][0]["url"] == "https://poe.com/image.jpg"
+
+
+def test_image_generations_b64_json(client, mock_all_external_calls):
+    request_data = {
+        "prompt": "A beautiful sunset",
+        "model": "Imagen-3-Fast",
+        "response_format": "b64_json"
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response with attachment
+    mock_message = MagicMock()
+    mock_message.text = "Here's your image:"
+    mock_message.attachment = fp.Attachment(
+        url="https://poe.com/image.jpg",
+        content_type="image/jpeg",
+        name="image.jpg"
+    )
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    # HTTP client is already mocked by mock_all_external_calls
+    mock_all_external_calls['http_client'].return_value.__aenter__.return_value.get.return_value.content = b"fake_image_data"
+
+    response = client.post("/v1/images/generations", json=request_data, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "data" in response_data
+    assert "b64_json" in response_data["data"][0]
+
+
+def test_image_edits_endpoint(client, mock_all_external_calls):
+    request_data = {
+        "image": "base64_image_data",
+        "prompt": "Make it more colorful",
+        "model": "Imagen-3-Fast",
+        "response_format": "url"
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response with attachment
+    mock_message = MagicMock()
+    mock_message.text = "Here's your edited image:"
+    mock_message.attachment = fp.Attachment(
+        url="https://poe.com/edited_image.jpg",
+        content_type="image/jpeg",
+        name="edited_image.jpg"
+    )
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/images/edits", json=request_data, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "created" in response_data
+    assert "data" in response_data
+    assert len(response_data["data"]) == 1
+    assert response_data["data"][0]["url"] == "https://poe.com/edited_image.jpg"
+
+
+def test_image_generations_no_file(client, mock_all_external_calls):
+    request_data = {
+        "prompt": "A beautiful sunset",
+        "model": "Imagen-3-Fast"
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response without attachment
+    mock_message = MagicMock()
+    mock_message.text = "I couldn't generate an image."
+    mock_message.attachment = None
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/images/generations", json=request_data, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["data"][0]["url"] == "https://example.com/generated_image.png"
+
+
+def test_completions_with_image_urls(client, mock_all_external_calls):
+    request_data = {
+        "model": "Imagen-3-Fast",
+        "prompt": "Generate an image of a cat",
+        "stream": False,
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response with file attachment
+    mock_message = MagicMock()
+    mock_message.text = "Here's your image:"
+    mock_message.attachment = fp.Attachment(
+        url="https://poe.com/generated_cat.jpg",
+        content_type="image/jpeg",
+        name="cat.jpg"
+    )
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/completions", json=request_data, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "https://poe.com/generated_cat.jpg" in response_data["choices"][0]["text"]
+
+
+def test_completions_streaming_with_image_urls(client, mock_all_external_calls):
+    request_data = {
+        "model": "Imagen-3-Fast",
+        "prompt": "Generate an image of a cat",
+        "stream": True,
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response with file attachment for streaming
+    mock_message = MagicMock()
+    mock_message.text = "Here's your image:"
+    mock_message.attachment = fp.Attachment(
+        url="https://poe.com/generated_cat.jpg",
+        content_type="image/jpeg",
+        name="cat.jpg"
+    )
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/completions", json=request_data, headers=headers)
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
