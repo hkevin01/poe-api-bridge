@@ -1,4 +1,4 @@
-.PHONY: start test test-verbose install deploy clean install-prod install-dev format venv
+.PHONY: start test test-verbose install deploy clean install-prod install-dev format venv web-dev web-build
 
 # Create virtual environment with Python 3.12
 venv:
@@ -51,3 +51,13 @@ clean:
 # Deploy to Modal
 deploy:
 	./venv/bin/modal deploy modal_app.py
+
+# Web development - install deps and run dev server
+web-dev:
+	npm install --prefix web
+	npm run dev --prefix web
+
+# Build web app to static directory
+web-build:
+	npm install --prefix web
+	npm run build --prefix web

@@ -1,0 +1,53 @@
+.inline-code-container {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.inline-code {
+  background-color: #f0f0f0; /* Light grey background */
+  padding: 0.2em 0.4em;
+  margin: 0 0.2em;
+  border-radius: 3px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+  color: #333; /* Dark grey text */
+  position: relative; /* For positioning the button */
+}
+
+/* Copy button styling */
+.copy-button-inline {
+  position: absolute;
+  right: 0.2em;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0; /* Hidden by default */
+  background-color: rgba(74, 85, 104, 0.9); /* Slightly transparent background */
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 0.15em 0.4em;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  transition: opacity 0.2s, background-color 0.2s;
+  z-index: 2;
+}
+
+/* Only show button on hover */
+.inline-code:hover .copy-button-inline {
+  opacity: 0.8;
+}
+
+.copy-button-inline:hover {
+  opacity: 1;
+}
+
+.copy-button-inline.copied {
+  background-color: rgba(56, 161, 105, 0.9); /* Transparent green when copied */
+}
+
+/* Add some extra padding to make room for the button on hover */
+.inline-code {
+  padding-right: 3.5em;
+}
