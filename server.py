@@ -36,10 +36,6 @@ app = FastAPI(
     description="A proxy server for Poe API that provides OpenAI-compatible endpoints"
 )
 
-# Create request ID dependency
-async def get_request_id(request: Request = None):
-    request_id = os.urandom(4).hex()
-    return request_id
 
 
 # Add CORS middleware configuration
@@ -324,8 +320,7 @@ def count_message_tokens(
 @app.post("//v1/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest,
-    api_key: str = Depends(get_api_key),
-    request_id: str = Depends(get_request_id)
+    api_key: str = Depends(get_api_key)
 ):
 
     try:
@@ -375,13 +370,13 @@ async def chat_completions(
                 "X-Accel-Buffering": "no",
             }
             return StreamingResponse(
-                stream_openai_format(request.model, messages, api_key, request_id=request_id),
+                stream_openai_format(request.model, messages, api_key),
                 headers=headers,
                 media_type="text/event-stream",
             )
 
         # For non-streaming, accumulate the full response
-        response = await generate_poe_bot_response(request.model, messages, api_key, request_id)
+        response = await generate_poe_bot_response(request.model, messages, api_key)
 
         # Calculate token counts
         token_counts = count_message_tokens(messages)
@@ -395,7 +390,6 @@ async def chat_completions(
         completion_response = {
             "id": "chatcmpl-" + os.urandom(12).hex(),
             "object": "chat.completion",
-            "system_fingerprint": "fp_" + os.urandom(12).hex(),
             "created": int(time.time()),
             "model": request.model,
             "choices": [
@@ -475,14 +469,12 @@ async def chat_completions(
 
 
 async def stream_response(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str, request_id: str = None
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str
 ):
     """Common streaming function for all response types"""
     model = normalize_model(model)
     first_chunk = True
     accumulated_response = ""
-    if not request_id:
-        request_id = os.urandom(4).hex()
 
     # Calculate prompt tokens before starting stream
     token_counts = count_message_tokens(messages)
@@ -567,7 +559,6 @@ async def create_stream_chunk(
     elif format_type == "chat":
         return {
             "id": f"chatcmpl-{chunk_id}",
-            "system_fingerprint": "fp_" + os.urandom(12).hex(),
             "object": "chat.completion.chunk",
             "created": timestamp,
             "model": model,
@@ -632,13 +623,9 @@ async def create_final_chunk(
 
 
 async def stream_response_with_replace(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str, request_id: str = None
+    model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str
 ):
     """Common streaming function for all response types with replace support"""
-    # Get/create request ID
-    if not request_id:
-        request_id = os.urandom(4).hex()
-    
     model = normalize_model(model)
     first_chunk = True
     accumulated_response = ""
@@ -718,9 +705,9 @@ async def stream_response_with_replace(
 
 
 async def stream_completions_format(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
+    model: str, messages: list[fp.ProtocolMessage], api_key: str
 ):
-    async for chunk in stream_response(model, messages, api_key, "completion", request_id):
+    async for chunk in stream_response(model, messages, api_key, "completion"):
         yield chunk
 
 
@@ -744,8 +731,6 @@ async def global_exception_handler(
     request: Request,
     exc: Exception
 ):
-    request_id = os.urandom(4).hex()
-
     # For HTTPExceptions, return their predefined responses
     if isinstance(exc, HTTPException):
         return JSONResponse(
@@ -764,7 +749,6 @@ async def global_exception_handler(
             "error": {
                 "message": f"An unexpected error occurred: {str(exc)}",
                 "type": "server_error",
-                "request_id": request_id,
             }
         },
     )
@@ -863,7 +847,6 @@ async def completions(
     request: Request,
     api_key: str = Depends(get_api_key)
 ):
-    request_id = os.urandom(4).hex()
     body = await request.json()
 
     messages = [fp.ProtocolMessage(role="user", content=body.get("prompt", ""))]
@@ -872,12 +855,12 @@ async def completions(
 
     if stream:
         return StreamingResponse(
-            stream_completions_format(model, messages, api_key, request_id),
+            stream_completions_format(model, messages, api_key),
             media_type="text/event-stream",
         )
 
     # For non-streaming requests, accumulate the full response
-    response = await generate_poe_bot_response(model, messages, api_key, request_id)
+    response = await generate_poe_bot_response(model, messages, api_key)
 
     # Calculate token counts
     prompt_tokens = count_tokens(body.get("prompt", ""))
@@ -911,12 +894,9 @@ async def completions(
 
 
 async def generate_poe_bot_response(
-    model, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
+    model, messages: list[fp.ProtocolMessage], api_key: str
 ):
     model = normalize_model(model)
-    if not request_id:
-        request_id = os.urandom(4).hex()
-    
     accumulated_text = ""
 
     try:
@@ -957,9 +937,9 @@ async def generate_poe_bot_response(
 
 
 async def stream_openai_format(
-    model: str, messages: list[fp.ProtocolMessage], api_key: str, request_id: str = None
+    model: str, messages: list[fp.ProtocolMessage], api_key: str
 ):
-    async for chunk in stream_response_with_replace(model, messages, api_key, "chat", request_id=request_id):
+    async for chunk in stream_response_with_replace(model, messages, api_key, "chat"):
         yield chunk
 
 @app.get("/openapi.json")
