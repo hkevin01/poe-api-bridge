@@ -53,6 +53,9 @@ I've tested Roo Code, Cline, and various other tools - they work reliably. Feel 
 - Anthropic API - similar to https://github.com/1rgs/claude-code-proxy. It would be nice to use Claude Code with Poe. 
 - Audio API, maybe elevenlabs compat. LLMs are having hard time understanding that `images/generations` endpoint returns audio/video.
 - Native Tool Calling, as soon as Poe supports it.
+- Embeddings `openai.embeddings.create` would be nice
+- OpenAI responses API https://platform.openai.com/docs/api-reference/responses
+- MCP Client
 
 # Development
 
