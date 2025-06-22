@@ -57,7 +57,7 @@ clean:
 	find . -name "__pycache__" -type d -exec rm -rf {} +
 
 # Deploy to Modal
-deploy:
+deploy: web-build
 	./venv/bin/modal deploy modal_app.py
 
 # Web development - install deps and run dev server

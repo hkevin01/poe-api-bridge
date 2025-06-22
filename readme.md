@@ -1,6 +1,6 @@
 # Poe API Bridge
 
-**Deployed app:** https://io--poe-api-bridge-poeapibridge-fastapi-app.modal.run
+**Deployed app:** https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.modal.run
 
 Poe provides a [Python API](https://creator.poe.com/docs/external-application-guide), but it uses a custom format that requires custom providers, making it difficult to integrate into standard applications.
 
