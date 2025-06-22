@@ -1,19 +1,39 @@
 # Poe API Bridge
 
-OpenAI API compatible server that proxies requests to Poe.com.
+**Deployed app:** https://io--poe-api-bridge-poeapibridge-fastapi-app.modal.run
+
+Poe provides a [Python API](https://creator.poe.com/docs/external-application-guide), but it uses a custom format that requires custom providers, making it difficult to integrate into standard applications.
+
+This project serves as a wrapper around the Poe API, providing a standard `/chat/completions` endpoint that can be used anywhere.
+
+Additionally, it provides `/images/generations` and `/images/edits` endpoints that work with any bots capable of returning image attachments, but they also support audio and video bots.
+
+## Tools
+
+Poe has limited support for tools with a non-conventional API requiring users to provide Python executors. Many applications require tool usage, so this project implements "fake" tool calling via prompting and XML parsing. In theory, this approach can work with any bot, even those that don't natively support tool calling. See the specification in [`docs/fake_tool_calling_spec.md`](docs/fake_tool_calling_spec.md) for more details.
+
+## Token Counting
+
+The bridge reports usage statistics in the standard OpenAI format:
+```json
+{
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 128,
+    "total_tokens": 170
+  }
+}
+```
+
+Take the token counting with a grain of salt - it uses tiktoken to count tokens. Poe doesn't report these numbers, so the counts might differ from actual tokens, especially on non-OpenAI models.
+
+## Supported Applications
+
+I've tested Roo Code, Cline, and various other tools - they work reliably. Feel free to create an issue if something is broken.
+
+# Development
 
 ## Server
-Populate these environment variables in `.env`:
-> **Important:** Do not check these in.
-
-```
-SERVER_PORT=80
-POE_API_KEY=1234567890-234567890  # Copy from poe.com/api_key
-# Optional: Override the base URL for Poe BotQuery API
-# e.g., BOT_QUERY_API_BASE_URL=https://chunho-testing.quora.net/bot/
-BOT_QUERY_API_BASE_URL=https://api.poe.com/bot/
-```
-
 Start in dev mode (with auto-reload)
 ```
 make start-dev
@@ -29,67 +49,3 @@ Run automated tests
 ```
 make test
 ```
-
-Run verification scripts
-```
-python3 verify_regular_query.py
-```
-
-## Deployment
-Deploy to Modal
-```
-make deploy
-```
-
-## Logging
-This project uses Better Stack for logging. The following environment variables are **required**:
-
-1. `LOGTAIL_SOURCE_TOKEN`: Your Better Stack source token
-2. `LOGTAIL_SOURCE_ID`: Identifier for your log source (e.g., "poe_api_bridge")
-3. `LOGTAIL_HOST`: Your Better Stack ingestion host
-
-All environment variables must be properly set or the application will fail to start.
-
-When deploying to Modal, add these variables to your secrets:
-```
-modal secret create poe-api-bridge-secrets LOGTAIL_SOURCE_TOKEN=your_token LOGTAIL_SOURCE_ID=poe_api_bridge LOGTAIL_HOST=your-host
-```
-
-## Utils
-Clean artifacts
-```
-make clean
-```
-
-
-
-## E2E testing
-
-### Test with Cursor with local server
-
-1. Install Cursor.
-
-2. Install the `Cline` extension (cline.bot, with 1.2M downloads as of 2025/4/8)
-
-3. Run `make start-dev`.
-
-4. Open `Cline` extension, configure the base URL as `http://0.0.0.0:80/v1/`. Specify the model name as `Claude-3.5-Sonnet`.
-
-  ![Cline UI](static/cline-ui.jpg)
-
-  * [Optional] You can pick other models listed in `http://0.0.0.0:80/v1/models`.
-
-    ![Available Models](static/models-endpoint-response.jpg)
-
-5. You should be good to go!
-  * Start with sending a message:
-    ![Message UI](static/message.jpg)
-
-  * When the task is in progress
-    ![Task Ongoing](static/task-ongoing.jpg)
-  * When it completes:
-    ![Task Compelted](static/task-completed.jpg)
-
-6. In your tab, you should see some HTTP requests sent to the local server:
-
-  ![Local Server Reqests](static/local-server-http-requests.jpg)

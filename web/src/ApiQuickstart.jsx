@@ -11,7 +11,7 @@ const API_BASE_URL = 'https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.m
 
 // ApiPlayground Component
 function ApiPlayground({ defaultModel }) {
-    const [isCollapsed, setIsCollapsed] = useState(true)
+    const [isCollapsed, setIsCollapsed] = useState(false)
     const [apiKey, setApiKey] = useState('')
     const [apiResponses, setApiResponses] = useState({
         chat: '',
@@ -50,29 +50,6 @@ const response = await fetch(\`\${baseUrl}/chat/completions\`, {
 
 const data = await response.json();
 console.log(data.choices[0].message.content);`
-        },
-        models: {
-            name: "List Models",
-            description: "Fetch all available models from the API",
-            code: `// List available models
-const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}";
-const baseUrl = "${API_BASE_URL}";
-
-const response = await fetch(\`\${baseUrl}/models\`, {
-  method: 'GET',
-  headers: {
-    'Authorization': \`Bearer \${apiKey}\`
-  }
-});
-
-const data = await response.json();
-console.log(\`Found \${data.data.length} available models:\`);
-data.data.slice(0, 5).forEach(model => {
-  console.log(\`- \${model.id}\`);
-});
-if (data.data.length > 5) {
-  console.log(\`... and \${data.data.length - 5} more\`);
-}`
         },
         stream: {
             name: "Stream Chat",
@@ -123,7 +100,7 @@ const response = await openai.images.generate({
   n: 1,
 });
 
-console.log('Generated image URL:', response.data[0].url);`
+console.log('Generated image:', response.data[0].url);`
         },
         imageEdit: {
             name: "Image Edit",
@@ -143,6 +120,8 @@ const imageResponse = await fetch(imageUrl);
 const imageBlob = await imageResponse.blob();
 const imageFile = new File([imageBlob], "image.png", { type: "image/png" });
 
+console.log('Original image:', imageUrl);
+
 const response = await openai.images.edit({
   model: "StableDiffusionXL",
   image: imageFile,
@@ -150,11 +129,11 @@ const response = await openai.images.edit({
   n: 1,
 });
 
-console.log('Edited image URL:', response.data[0].url);`
+console.log('Edited image:', response.data[0].url);`
         },
         imageChatGen: {
             name: "Image Gen via Chat",
-            description: "Generate images through chat completion",
+            description: "You can use /chat/completions to generate images as well, but you need to do the URL parsing yourself. It works also for audio, video, etc.",
             code: `// Image generation via chat completion
 const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}";
 const baseUrl = "${API_BASE_URL}";
@@ -174,17 +153,37 @@ const response = await fetch(\`\${baseUrl}/chat/completions\`, {
 });
 
 const data = await response.json();
-console.log('Generated image URL:', data.choices[0].message.content);`
-        }
+console.log('Generated image:', data.choices[0].message.content);`
+        },
+        models: {
+            name: "List Models",
+            description: "Fetch all available models from the API. These are only some of the popular models. Feel free to use any model on Poe https://poe.com/explore?category=Official",
+            code: `// List available models
+const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}";
+const baseUrl = "${API_BASE_URL}";
+
+const response = await fetch(\`\${baseUrl}/models\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': \`Bearer \${apiKey}\`
+  }
+});
+
+const data = await response.json();
+console.log(\`Found \${data.data.length} available models:\`);
+data.data.forEach(model => {
+  console.log(\`- \${model.id}\`);
+});`
+        },
     };
 
     const snippetTabs = [
         { id: 'chat', label: 'Chat' },
-        { id: 'models', label: 'Models' },
-        { id: 'stream', label: 'Stream' },
+        { id: 'stream', label: 'Chat Streaming' },
         { id: 'imageGen', label: 'Image Gen' },
         { id: 'imageEdit', label: 'Image Edit' },
-        { id: 'imageChatGen', label: 'Chat Image Gen' }
+        { id: 'imageChatGen', label: 'Chat Image Gen' },
+        { id: 'models', label: 'Model List' },
     ];
 
     const executeCode = async () => {
@@ -254,7 +253,21 @@ console.log('Generated image URL:', data.choices[0].message.content);`
         try {
             const logs = JSON.parse(currentResponse);
             if (!logs || logs.length === 0) return 'No output captured';
-            return logs.join('\n');
+
+            // Check if any logs contain image URLs (specific format: description, imageUrl)
+            const processedLogs = logs.map(log => {
+                // Check if log matches the pattern "description: url" where url looks like an image URL
+                // Updated regex to handle Poe CDN URLs and traditional image extensions
+                const imageMatch = log.match(/^(.+?):\s*(https?:\/\/[^\s]+(?:\.(jpg|jpeg|png|gif|webp|svg)(?:\?[^\s]*)?|\/image\/[^\s?]+(?:\?[^\s]*)?|pfst\.cf2\.poecdn\.net[^\s]+))/i);
+                if (imageMatch) {
+                    const description = imageMatch[1];
+                    const imageUrl = imageMatch[2];
+                    return `${description}:\n<img src="${imageUrl}" alt="${description}" style="max-width: 400px; max-height: 400px; border-radius: 8px; margin: 10px 0;" />`;
+                }
+                return log;
+            });
+
+            return processedLogs.join('\n');
         } catch (e) {
             return "Could not parse console output";
         }
@@ -325,9 +338,10 @@ console.log('Generated image URL:', data.choices[0].message.content);`
                                     <div className="response-content">
                                         <h4>Console Output:</h4>
                                         <div className="content-box">
-                                            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                                {getConsoleOutput()}
-                                            </pre>
+                                            <div
+                                                style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace' }}
+                                                dangerouslySetInnerHTML={{ __html: getConsoleOutput() }}
+                                            />
                                         </div>
                                     </div>
                                 </div>
@@ -560,8 +574,8 @@ print(chat_completion.choices[0].message.content)
             <div className="api-docs-note">
                 <p><strong>Current Limitations:</strong></p>
                 <ul className="simple-list">
-                    <li>Prompt caching functionality is under development</li>
-                    <li>Tool/function calling is not available. You can simulate tool calling via prompting. XML works best.</li>
+                    <li>Prompt caching functionality is under development on Poe side.</li>
+                    <li>Tool calling is done via prompting/parsing. Poe doesn't support native Tool calling.</li>
                 </ul>
                 <p className="note-footer">
                     Track development progress on <a href="https://github.com/poe-platform/fastapi_poe" target="_blank" rel="noopener noreferrer">GitHub</a>.
@@ -581,29 +595,6 @@ print(chat_completion.choices[0].message.content)
                         <h3>JavaScript</h3>
                         <p>Example chat completion request using the OpenAI SDK:</p>
                         <CodeBlock code={javascriptCode} language="javascript" onCopy={copyToClipboard} />
-
-                        <h4>List Available Models</h4>
-                        <CodeBlock
-                            code={`
-// First, install the OpenAI SDK
-// npm install openai
-
-import OpenAI from 'openai';
-
-const openai = new OpenAI({
-  apiKey: "YOUR_POE_API_KEY", // Get your API key from https://poe.com/api_key
-  baseURL: "${API_BASE_URL}",
-});
-
-async function listModels() {
-  const models = await openai.models.list();
-  console.log(models.data);
-}
-
-listModels();`}
-                            language="javascript"
-                            onCopy={copyToClipboard}
-                        />
                     </div>
                 )}
 
@@ -612,27 +603,6 @@ listModels();`}
                         <h3>Python</h3>
                         <p>Example chat completion request using the OpenAI Python library:</p>
                         <CodeBlock code={pythonCode} language="python" onCopy={copyToClipboard} />
-
-                        <h4>List Available Models</h4>
-                        <CodeBlock
-                            code={`
-# First, install the OpenAI SDK
-# pip install openai
-
-from openai import OpenAI
-
-client = OpenAI(
-    api_key="YOUR_POE_API_KEY",  # Get your API key from https://poe.com/api_key
-    base_url="${API_BASE_URL}"
-)
-
-# List available models
-models = client.models.list()
-for model in models.data:
-    print(model.id)`}
-                            language="python"
-                            onCopy={copyToClipboard}
-                        />
                     </div>
                 )}
 
@@ -684,20 +654,12 @@ for model in models.data:
                             language="bash"
                             onCopy={copyToClipboard}
                         />
-
-                        <h4>List Available Models Example</h4>
-                        <CodeBlock
-                            code={`curl ${API_BASE_URL}/models \\
-    -H "Authorization: Bearer YOUR_POE_API_KEY"`}
-                            language="bash"
-                            onCopy={copyToClipboard}
-                        />
                     </div>
                 )}
             </div>
 
             <h2><Bot size={20} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px' }} />Available Models</h2>
-            <p>Access all Poe bots through this API bridge including these</p>
+            <p>Access all Poe bots through this API bridge including these. Check out <a href="https://poe.com/explore?category=Official" target="_blank" rel="noopener noreferrer">all official bots</a> and <a href="https://poe.com/explore?category=Image+generation" target="_blank" rel="noopener noreferrer">image generation bots</a>.</p>
 
             {modelsLoading && <p>Loading available models...</p>}
 
