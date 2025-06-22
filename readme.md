@@ -8,6 +8,24 @@ This project serves as a wrapper around the Poe API, providing a standard `/chat
 
 Additionally, it provides `/images/generations` and `/images/edits` endpoints that work with any bots capable of returning image attachments, but they also support audio and video bots.
 
+## Endpoints
+
+All bots work in all endpoints, and everything is multimodal. The endpoints differ in their intended user experience:
+
+### `/chat/completions`
+Provides a traditional **chat experience** where you interact conversationally with the bot. This endpoint is ideal for:
+- Back-and-forth conversations
+- Text-based interactions with multimodal capabilities. Models return URLs
+
+### `/images/generations` and `/images/edits`
+Provide a **work on file experience** where you submit content for processing or generation. These endpoints are ideal for:
+- Image generation and editing
+- File transformations
+- Audio/video processing
+- Single-request content creation
+
+Both endpoint types support the same underlying bots and multimodal capabilities - the difference is in how they structure the interaction pattern for different use cases.
+
 ## Tools
 
 Poe has limited support for tools with a non-conventional API requiring users to provide Python executors. Many applications require tool usage, so this project implements "fake" tool calling via prompting and XML parsing. In theory, this approach can work with any bot, even those that don't natively support tool calling. See the specification in [`docs/fake_tool_calling_spec.md`](docs/fake_tool_calling_spec.md) for more details.
