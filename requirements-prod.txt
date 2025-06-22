@@ -1,3 +1,4 @@
 fastapi==0.115.6
 fastapi-poe==0.0.64
 tiktoken==0.6.0
+python-multipart==0.0.20

@@ -40,7 +40,8 @@ POST /v1/completions
 - verify_image_generation script - the URL should be returned
 - generate image script script/....py
 - Notes
-  - For testing use Imagen-3-Fast model
+  - For testing use Imagen-3-Fast
+  - For testing edits use StableDiffusionXL
   - There's existing file scripts/eaa3f4c4fa1a10fb233e0e9fac9ec25ce67d77e365093671892d181d519bbf49.jpeg that you can use for testing
 
 # Poe API

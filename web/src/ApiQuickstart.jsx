@@ -3,6 +3,7 @@ import Tabs from './components/Tabs'
 import CodeBlock from './components/CodeBlock'
 import InlineCode from './components/InlineCode'
 import { Beaker, Rocket, Wrench, Lock, Bot, HelpCircle } from 'lucide-react'
+import OpenAI from 'openai'
 import './ApiQuickstart.css'
 
 // API base URL constant
@@ -12,87 +13,250 @@ const API_BASE_URL = 'https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.m
 function ApiPlayground({ defaultModel }) {
     const [isCollapsed, setIsCollapsed] = useState(true)
     const [apiKey, setApiKey] = useState('')
-    const [apiResponse, setApiResponse] = useState('')
+    const [apiResponses, setApiResponses] = useState({
+        chat: '',
+        models: '',
+        stream: '',
+        imageGen: '',
+        imageEdit: '',
+        imageChatGen: ''
+    })
     const [isLoading, setIsLoading] = useState(false)
     const [errorMessage, setErrorMessage] = useState('')
+    const [selectedSnippet, setSelectedSnippet] = useState('chat')
 
-    const vanillaJsCode = `// Vanilla JavaScript example
-const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}"; // Your API key from https://poe.com/api_key
+    const codeSnippets = {
+        chat: {
+            name: "Chat Completion",
+            description: "Basic chat completion request with system and user messages",
+            code: `// Chat completion example
+const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}";
 const baseUrl = "${API_BASE_URL}";
 
-// Function to make a request to the Poe API
-async function makeRequest() {
-  try {
-    const response = await fetch(\`\${baseUrl}/chat/completions\`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': \`Bearer \${apiKey}\`
-      },
-      body: JSON.stringify({
-        model: "${defaultModel}",
-        messages: [
-          { role: "system", content: "You are a helpful assistant." },
-          { role: "user", content: "Tell me a short joke about programming." }
-        ]
-      })
-    });
+const response = await fetch(\`\${baseUrl}/chat/completions\`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': \`Bearer \${apiKey}\`
+  },
+  body: JSON.stringify({
+    model: "${defaultModel}",
+    messages: [
+      { role: "system", content: "You are a helpful assistant." },
+      { role: "user", content: "Tell me a short joke about programming." }
+    ]
+  })
+});
 
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('Error:', error);
-    throw error;
+const data = await response.json();
+console.log(data.choices[0].message.content);`
+        },
+        models: {
+            name: "List Models",
+            description: "Fetch all available models from the API",
+            code: `// List available models
+const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}";
+const baseUrl = "${API_BASE_URL}";
+
+const response = await fetch(\`\${baseUrl}/models\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': \`Bearer \${apiKey}\`
   }
-}`
+});
 
-    const handleRunExample = async () => {
+const data = await response.json();
+console.log(\`Found \${data.data.length} available models:\`);
+data.data.slice(0, 5).forEach(model => {
+  console.log(\`- \${model.id}\`);
+});
+if (data.data.length > 5) {
+  console.log(\`... and \${data.data.length - 5} more\`);
+}`
+        },
+        stream: {
+            name: "Stream Chat",
+            description: "Stream a chat completion response",
+            code: `// Streaming chat completion using OpenAI client
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: "${apiKey || 'YOUR_POE_API_KEY'}",
+  baseURL: "${API_BASE_URL}",
+  dangerouslyAllowBrowser: true,
+});
+
+console.log('Starting streaming response...');
+
+const stream = await openai.chat.completions.create({
+  model: "${defaultModel}",
+  messages: [
+    { role: "user", content: "Count from 1 to 5 slowly." }
+  ],
+  stream: true,
+});
+
+for await (const chunk of stream) {
+  const content = chunk.choices[0]?.delta?.content;
+  if (content) {
+    console.log(content);
+  }
+}
+
+console.log('Stream completed!');`
+        },
+        imageGen: {
+            name: "Image Generation",
+            description: "Generate images using Imagen-3-Fast",
+            code: `// Image generation using OpenAI client
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: "${apiKey || 'YOUR_POE_API_KEY'}",
+  baseURL: "${API_BASE_URL}",
+  dangerouslyAllowBrowser: true,
+});
+
+const response = await openai.images.generate({
+  model: "Imagen-3-Fast",
+  prompt: "A cute robot painting a landscape",
+  n: 1,
+});
+
+console.log('Generated image URL:', response.data[0].url);`
+        },
+        imageEdit: {
+            name: "Image Edit",
+            description: "Edit an existing image using StableDiffusionXL",
+            code: `// Image editing using OpenAI client
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: "${apiKey || 'YOUR_POE_API_KEY'}",
+  baseURL: "${API_BASE_URL}",
+  dangerouslyAllowBrowser: true,
+});
+
+// Fetch the image and convert to File object
+const imageUrl = "https://pfst.cf2.poecdn.net/base/image/728cd697ec740e193d2ecdb1de750ba0a48656a6b9c79dfbfe949c7ff1e1a8db?w=1024&h=1024&pmaid=404413313";
+const imageResponse = await fetch(imageUrl);
+const imageBlob = await imageResponse.blob();
+const imageFile = new File([imageBlob], "image.png", { type: "image/png" });
+
+const response = await openai.images.edit({
+  model: "StableDiffusionXL",
+  image: imageFile,
+  prompt: "Make this image look like a cartoon",
+  n: 1,
+});
+
+console.log('Edited image URL:', response.data[0].url);`
+        },
+        imageChatGen: {
+            name: "Image Gen via Chat",
+            description: "Generate images through chat completion",
+            code: `// Image generation via chat completion
+const apiKey = "${apiKey || 'YOUR_POE_API_KEY'}";
+const baseUrl = "${API_BASE_URL}";
+
+const response = await fetch(\`\${baseUrl}/chat/completions\`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': \`Bearer \${apiKey}\`
+  },
+  body: JSON.stringify({
+    model: "Imagen-3-Fast",
+    messages: [
+      { role: "user", content: "Generate an image of a futuristic city skyline at sunset" }
+    ]
+  })
+});
+
+const data = await response.json();
+console.log('Generated image URL:', data.choices[0].message.content);`
+        }
+    };
+
+    const snippetTabs = [
+        { id: 'chat', label: 'Chat' },
+        { id: 'models', label: 'Models' },
+        { id: 'stream', label: 'Stream' },
+        { id: 'imageGen', label: 'Image Gen' },
+        { id: 'imageEdit', label: 'Image Edit' },
+        { id: 'imageChatGen', label: 'Chat Image Gen' }
+    ];
+
+    const executeCode = async () => {
         if (!apiKey) {
             setErrorMessage('Please enter your API key.');
             return;
         }
 
         setIsLoading(true);
-        setApiResponse('');
         setErrorMessage('');
 
         try {
-            const response = await fetch(`${API_BASE_URL}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`
+            const snippet = codeSnippets[selectedSnippet];
+
+            // Create a fake console that captures output
+            const capturedLogs = [];
+            const fakeConsole = {
+                log: (...args) => {
+                    const logMessage = args.map(arg =>
+                        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                    ).join(' ');
+                    capturedLogs.push(logMessage);
                 },
-                body: JSON.stringify({
-                    model: defaultModel,
-                    messages: [
-                        { role: "system", content: "You are a helpful assistant." },
-                        { role: "user", content: "Tell me a short joke about programming." }
-                    ]
-                })
-            });
+                error: (...args) => {
+                    const logMessage = '[ERROR] ' + args.map(arg =>
+                        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                    ).join(' ');
+                    capturedLogs.push(logMessage);
+                },
+                warn: (...args) => {
+                    const logMessage = '[WARN] ' + args.map(arg =>
+                        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                    ).join(' ');
+                    capturedLogs.push(logMessage);
+                }
+            };
 
-            const data = await response.json();
+            // Remove import statements from the code before execution
+            const codeWithoutImports = snippet.code.replace(/^import\s+.*$/gm, '');
 
-            if (!response.ok) {
-                throw new Error(data.error?.message || 'Unknown error occurred');
-            }
+            // Create a new async function from the flat code and execute it
+            const asyncFunction = new Function('console', 'fetch', 'OpenAI', `
+                return (async () => {
+                    ${codeWithoutImports}
+                })();
+            `);
 
-            setApiResponse(JSON.stringify(data, null, 2));
+            await asyncFunction(fakeConsole, fetch, OpenAI);
+
+            // Store the captured logs as the response for the current tab
+            setApiResponses(prev => ({
+                ...prev,
+                [selectedSnippet]: JSON.stringify(capturedLogs, null, 2)
+            }));
         } catch (error) {
             console.error('Error:', error);
-            setErrorMessage(error.message || 'Failed to fetch response');
+            setErrorMessage(error.message || 'Failed to execute code');
         } finally {
             setIsLoading(false);
         }
     };
 
-    const extractContent = (responseJson) => {
+    const getConsoleOutput = () => {
+        const currentResponse = apiResponses[selectedSnippet];
+        if (!currentResponse) return null;
+
         try {
-            const data = JSON.parse(responseJson);
-            return data.choices[0].message.content;
+            const logs = JSON.parse(currentResponse);
+            if (!logs || logs.length === 0) return 'No output captured';
+            return logs.join('\n');
         } catch (e) {
-            return "Could not parse response content";
+            return "Could not parse console output";
         }
     };
 
@@ -106,7 +270,6 @@ async function makeRequest() {
             });
     };
 
-    const [jsonCollapsed, setJsonCollapsed] = useState(true);
 
     return (
         <div className="playground-section">
@@ -143,56 +306,46 @@ async function makeRequest() {
                             />
                         </div>
 
-                        <h4>JavaScript Example</h4>
-                        <p>This code will make a simple chat completion request to the Poe API:</p>
-                        <CodeBlock
-                            code={vanillaJsCode}
-                            language="javascript"
-                            onCopy={copyToClipboard}
-                        />
+                        <div className="snippet-selector">
+                            <h4>Code Snippets</h4>
+                            <Tabs tabs={snippetTabs} activeTab={selectedSnippet} onChange={setSelectedSnippet} />
+                        </div>
 
-                        <button
-                            className="run-button"
-                            onClick={handleRunExample}
-                            disabled={isLoading}
-                        >
-                            {isLoading ? 'Loading...' : 'Run Example'}
-                        </button>
+                        <div className="snippet-content">
+                            <h4>{codeSnippets[selectedSnippet].name}</h4>
+                            <p>{codeSnippets[selectedSnippet].description}</p>
+                            <CodeBlock
+                                code={codeSnippets[selectedSnippet].code}
+                                language="javascript"
+                                onCopy={copyToClipboard}
+                            />
+
+                            {apiResponses[selectedSnippet] && (
+                                <div className="response-container">
+                                    <div className="response-content">
+                                        <h4>Console Output:</h4>
+                                        <div className="content-box">
+                                            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                                {getConsoleOutput()}
+                                            </pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <button
+                                className="run-button"
+                                onClick={executeCode}
+                                disabled={isLoading || !apiKey}
+                                title={!apiKey ? "Token is required" : ""}
+                            >
+                                {isLoading ? 'Executing...' : 'Run snippet'}
+                            </button>
+                        </div>
 
                         {errorMessage && (
                             <div className="error-message">
                                 <strong>Error:</strong> {errorMessage}
-                            </div>
-                        )}
-
-                        {apiResponse && (
-                            <div className="response-container">
-                                {apiResponse.includes('"content":') && (
-                                    <div className="response-content">
-                                        <h4>Response Content:</h4>
-                                        <div className="content-box">
-                                            {extractContent(apiResponse)}
-                                        </div>
-                                    </div>
-                                )}
-
-                                <div className="json-response">
-                                    <button
-                                        className="json-toggle"
-                                        onClick={() => setJsonCollapsed(!jsonCollapsed)}
-                                    >
-                                        <h4>API Response (JSON):</h4>
-                                        <span>{jsonCollapsed ? '▼' : '▲'}</span>
-                                    </button>
-
-                                    {!jsonCollapsed && (
-                                        <CodeBlock
-                                            code={apiResponse}
-                                            language="json"
-                                            onCopy={copyToClipboard}
-                                        />
-                                    )}
-                                </div>
                             </div>
                         )}
                     </div>
@@ -376,7 +529,7 @@ print(chat_completion.choices[0].message.content)
                     <div className="step">
                         <div className="step-number">1</div>
                         <div className="step-content">
-                            <p>Subscribe to <a href="https://poe.com" target="_blank" rel="noopener noreferrer">Poe</a> or sign in if you already have an account.</p>
+                            <p>Create an account or login to <a href="https://poe.com" target="_blank" rel="noopener noreferrer">Poe</a></p>
                         </div>
                     </div>
                     <div className="step">
@@ -407,7 +560,6 @@ print(chat_completion.choices[0].message.content)
             <div className="api-docs-note">
                 <p><strong>Current Limitations:</strong></p>
                 <ul className="simple-list">
-                    <li>Media attachments (images, video, audio) are not yet fully supported. Some models will return content URL. Try it out.</li>
                     <li>Prompt caching functionality is under development</li>
                     <li>Tool/function calling is not available. You can simulate tool calling via prompting. XML works best.</li>
                 </ul>

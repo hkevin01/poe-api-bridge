@@ -14,6 +14,7 @@ def mock_all_external_calls():
     """Auto-mock all external API calls to prevent real requests"""
     with patch("server.get_bot_response") as mock_bot, \
          patch("fastapi_poe.upload_file") as mock_upload, \
+         patch("fastapi_poe.stream_request") as mock_stream, \
          patch("httpx.AsyncClient") as mock_client:
         
         # Default mock for get_bot_response
@@ -21,6 +22,12 @@ def mock_all_external_calls():
             response = fp.PartialResponse(text="Test response")
             yield response
         mock_bot.side_effect = default_bot_response
+        
+        # Default mock for stream_request (used by image generation)
+        async def default_stream_response(*args, **kwargs):
+            response = fp.PartialResponse(text="Test response")
+            yield response
+        mock_stream.side_effect = default_stream_response
         
         # Default mock for file upload
         mock_upload.return_value = fp.Attachment(
@@ -36,6 +43,7 @@ def mock_all_external_calls():
         
         yield {
             'bot_response': mock_bot,
+            'stream_request': mock_stream,
             'upload_file': mock_upload,
             'http_client': mock_client
         }
@@ -938,11 +946,16 @@ def test_image_generations_b64_json(client, mock_all_external_calls):
 
 
 def test_image_edits_endpoint(client, mock_all_external_calls):
-    request_data = {
-        "image": "base64_image_data",
+    # Create mock image file content
+    mock_image_content = b"fake_image_data"
+    
+    form_data = {
         "prompt": "Make it more colorful",
         "model": "Imagen-3-Fast",
         "response_format": "url"
+    }
+    files = {
+        "image": ("test_image.jpg", mock_image_content, "image/jpeg")
     }
     headers = {"Authorization": "Bearer test_api_key"}
 
@@ -960,13 +973,52 @@ def test_image_edits_endpoint(client, mock_all_external_calls):
     
     mock_all_external_calls['bot_response'].side_effect = mock_response_generator
 
-    response = client.post("/v1/images/edits", json=request_data, headers=headers)
+    response = client.post("/v1/images/edits", data=form_data, files=files, headers=headers)
     assert response.status_code == 200
     response_data = response.json()
     assert "created" in response_data
     assert "data" in response_data
     assert len(response_data["data"]) == 1
     assert response_data["data"][0]["url"] == "https://poe.com/edited_image.jpg"
+
+
+def test_image_edits_multiple_images(client, mock_all_external_calls):
+    # Create mock image file content
+    mock_image_content = b"fake_image_data"
+    
+    form_data = {
+        "prompt": "Make it more colorful",
+        "model": "StableDiffusionXL",
+        "response_format": "url",
+        "n": "3"
+    }
+    files = {
+        "image": ("test_image.jpg", mock_image_content, "image/jpeg")
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response with attachment - will be called 3 times
+    mock_message = MagicMock()
+    mock_message.text = "Here's your edited image:"
+    mock_message.attachment = fp.Attachment(
+        url="https://poe.com/edited_image.jpg",
+        content_type="image/jpeg",
+        name="edited_image.jpg"
+    )
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/images/edits", data=form_data, files=files, headers=headers)
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "created" in response_data
+    assert "data" in response_data
+    assert len(response_data["data"]) == 3  # Should have 3 images
+    for item in response_data["data"]:
+        assert item["url"] == "https://poe.com/edited_image.jpg"
 
 
 def test_image_generations_no_file(client, mock_all_external_calls):
@@ -987,9 +1039,43 @@ def test_image_generations_no_file(client, mock_all_external_calls):
     mock_all_external_calls['bot_response'].side_effect = mock_response_generator
 
     response = client.post("/v1/images/generations", json=request_data, headers=headers)
-    assert response.status_code == 200
+    assert response.status_code == 500
     response_data = response.json()
-    assert response_data["data"][0]["url"] == "https://example.com/generated_image.png"
+    assert "detail" in response_data
+    assert "error" in response_data["detail"]
+    assert response_data["detail"]["error"]["message"] == "Failed to generate image - no file returned from bot"
+    assert response_data["detail"]["error"]["type"] == "image_generation_error"
+def test_image_edits_no_file(client, mock_all_external_calls):
+    # Create mock image file content
+    mock_image_content = b"fake_image_data"
+    
+    form_data = {
+        "prompt": "Make it more colorful",
+        "model": "Imagen-3-Fast",
+        "response_format": "url"
+    }
+    files = {
+        "image": ("test_image.jpg", mock_image_content, "image/jpeg")
+    }
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Mock the bot response without attachment
+    mock_message = MagicMock()
+    mock_message.text = "I couldn't edit the image."
+    mock_message.attachment = None
+    
+    async def mock_response_generator(*args, **kwargs):
+        yield mock_message
+    
+    mock_all_external_calls['bot_response'].side_effect = mock_response_generator
+
+    response = client.post("/v1/images/edits", data=form_data, files=files, headers=headers)
+    assert response.status_code == 500
+    response_data = response.json()
+    assert "detail" in response_data
+    assert "error" in response_data["detail"]
+    assert response_data["detail"]["error"]["message"] == "Failed to edit image - no file returned from bot"
+    assert response_data["detail"]["error"]["type"] == "image_edit_error"
 
 
 def test_completions_with_image_urls(client, mock_all_external_calls):

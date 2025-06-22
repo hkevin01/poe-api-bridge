@@ -33,7 +33,7 @@ def main():
     print(f"Generating image with prompt: {args.prompt}")
     print(f"Using model: {args.model}")
     
-    # Test image generation
+    # Test single image generation
     response = client.images.generate(
         model=args.model,
         prompt=args.prompt,
@@ -41,7 +41,21 @@ def main():
         response_format="url"
     )
     
+    print(f"✅ Single image generation successful!")
     print(f"Generated image URL: {response.data[0].url}")
+    
+    # Test multiple image generation (n=3)
+    print(f"\n--- Testing Multiple Images (n=3) ---")
+    response_multi = client.images.generate(
+        model=args.model,
+        prompt=args.prompt,
+        n=3,
+        response_format="url"
+    )
+    
+    print(f"✅ Multiple image generation successful!")
+    for i, data in enumerate(response_multi.data):
+        print(f"Generated image {i+1} URL: {data.url}")
     
     # Test with b64_json format
     response_b64 = client.images.generate(
@@ -51,6 +65,7 @@ def main():
         response_format="b64_json"
     )
     
+    print(f"✅ Base64 image generation successful!")
     print(f"Generated image as base64 (length: {len(response_b64.data[0].b64_json)} characters)")
 
 

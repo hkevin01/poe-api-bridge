@@ -18,10 +18,13 @@ import tiktoken
 from fastapi import (
     Depends,
     FastAPI,
+    File,
+    Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -93,16 +96,6 @@ class ModerationRequest(BaseModel):
 
 class ImageGenerationRequest(BaseModel):
     prompt: str
-    model: Optional[str] = None
-    n: Optional[int] = 1
-    size: Optional[str] = None  # Ignored, Poe bots determine dimensions
-    response_format: Optional[str] = "url"
-
-
-class ImageEditRequest(BaseModel):
-    image: str  # File upload or base64
-    prompt: str
-    mask: Optional[str] = None  # Not supported by Poe
     model: Optional[str] = None
     n: Optional[int] = 1
     size: Optional[str] = None  # Ignored, Poe bots determine dimensions
@@ -509,7 +502,7 @@ async def chat_completions(
             )
 
         # For non-streaming, accumulate the full response
-        response = await generate_poe_bot_response(request.model, messages, api_key)
+        response = await generate_poe_bot_response_with_files(request.model, messages, api_key)
 
         # Calculate token counts
         token_counts = count_message_tokens(messages)
@@ -780,12 +773,17 @@ async def stream_response_with_replace(
             if is_replace_response:
                 accumulated_response = ""  # Reset accumulated response
                 
+            # Handle attachment URLs
+            message_text = message.text
+            if message.attachment:
+                message_text += f"\n{message.attachment.url}"
+            
             chunk = await create_stream_chunk(
-                message.text, model, format_type, first_chunk, is_replace_response
+                message_text, model, format_type, first_chunk, is_replace_response
             )
             
             # Accumulate the text (this starts fresh if we just reset)
-            accumulated_response += message.text
+            accumulated_response += message_text
             
             yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
             first_chunk = False
@@ -859,7 +857,7 @@ async def stream_completions_format_with_files(
         ):
             message_text = message.text
             
-            if hasattr(message, 'attachment') and message.attachment:
+            if message.attachment:
                 message_text += f"\n{message.attachment.url}"
             
             chunk = await create_stream_chunk(
@@ -953,7 +951,14 @@ async def global_exception_handler(
 async def list_models_openai():
     # Return list of available models in OpenAI-compatible format
     model_configs = [
-        # Claude models
+        {
+            "id": "Claude-Sonnet-4",
+            "context_window": 200000
+        },
+        {
+            "id": "Claude-Opus-4",
+            "context_window": 200000
+        },
         {
             "id": "Claude-3.7-Sonnet",
             "context_window": 200000
@@ -979,16 +984,6 @@ async def list_models_openai():
         {
             "id": "Gemini-2.5-Pro-Exp",
             "context_window": 1000000
-        },
-        # Claude-Opus-4
-        {
-            "id": "Claude-Opus-4",
-            "context_window": 200000
-        },
-        # Claude-Sonnet-4
-        {
-            "id": "Claude-Sonnet-4",
-            "context_window": 200000
         },
     ]
     
@@ -1089,8 +1084,9 @@ async def get_first_file_from_bot(model: str, messages: list[fp.ProtocolMessage]
         api_key=api_key,
         skip_system_prompt=True,
     ):
-        if hasattr(message, 'attachment') and message.attachment and not first_file:
+        if message.attachment and not first_file:
             first_file = message.attachment
+            break  # Only need the first file
     return first_file
 
 
@@ -1103,26 +1099,40 @@ async def image_generations(
 ):
     try:
         model = normalize_model(request.model or "Imagen-3-Fast")
+        num_images = max(1, min(request.n or 1, 10))  # Limit to reasonable range
         
         messages = [fp.ProtocolMessage(role="user", content=request.prompt)]
-        first_file = await get_first_file_from_bot(model, messages, api_key)
         
+        # Generate multiple images by making multiple requests
         data = []
-        if first_file:
-            if request.response_format == "b64_json":
-                async with httpx.AsyncClient() as client:
-                    img_response = await client.get(first_file.url)
-                    img_base64 = base64.b64encode(img_response.content).decode()
-                    data.append({"b64_json": img_base64})
-            else:
-                data.append({"url": first_file.url})
-        else:
-            data.append({"url": "https://example.com/generated_image.png"})
+        successful_generations = 0
         
-        return {
-            "created": int(time.time()),
-            "data": data
-        }
+        for i in range(num_images):
+            try:
+                file_result = await get_first_file_from_bot(model, messages, api_key)
+                
+                if file_result:
+                    if request.response_format == "b64_json":
+                        async with httpx.AsyncClient() as client:
+                            img_response = await client.get(file_result.url)
+                            img_base64 = base64.b64encode(img_response.content).decode()
+                            data.append({"b64_json": img_base64})
+                    else:
+                        data.append({"url": file_result.url})
+                    
+                    successful_generations += 1
+                else:
+                    print(f"Warning: Failed to generate image {i+1}/{num_images}")
+                    
+            except Exception as e:
+                print(f"Warning: Error generating image {i+1}/{num_images}: {e}")
+                continue
+        
+        if successful_generations > 0:
+            return {
+                "created": int(time.time()),
+                "data": data
+            }
         
     except Exception as e:
         error_message, error_data, error_type, error_id = parse_poe_error(e)
@@ -1130,37 +1140,80 @@ async def image_generations(
             status_code=500,
             detail={"error": {"message": error_message, "type": error_type}}
         )
+    
+    # If we get here, no file was returned
+    raise HTTPException(
+        status_code=500,
+        detail={"error": {"message": "Failed to generate image - no file returned from bot", "type": "image_generation_error"}}
+    )
 
 
 @app.post("/images/edits")
 @app.post("/v1/images/edits")
 @app.post("//v1/images/edits")
 async def image_edits(
-    request: ImageEditRequest,
+    image: UploadFile = File(...),
+    prompt: str = Form(...),
+    model: Optional[str] = Form(None),
+    n: Optional[int] = Form(1),
+    size: Optional[str] = Form(None),
+    response_format: Optional[str] = Form("url"),
+    mask: Optional[UploadFile] = File(None),
     api_key: str = Depends(get_api_key)
 ):
     try:
-        model = normalize_model(request.model or "Imagen-3-Fast")
+        model = normalize_model(model or "StableDiffusionXL")
+        num_images = max(1, min(n or 1, 10))  # Limit to reasonable range
         
-        messages = [fp.ProtocolMessage(role="user", content=request.prompt)]
-        first_file = await get_first_file_from_bot(model, messages, api_key)
+        # Read the image file and convert to base64
+        image_content = await image.read()
+        image_b64 = base64.b64encode(image_content).decode()
         
-        data = []
-        if first_file:
-            if request.response_format == "b64_json":
-                async with httpx.AsyncClient() as client:
-                    img_response = await client.get(first_file.url)
-                    img_base64 = base64.b64encode(img_response.content).decode()
-                    data.append({"b64_json": img_base64})
-            else:
-                data.append({"url": first_file.url})
+        # Create OpenAI-style multimodal content
+        openai_content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+        ]
+        
+        # Convert OpenAI content to Poe format using existing function
+        poe_content, attachments = await convert_openai_content_to_poe(openai_content, api_key)
+        
+        # Create ProtocolMessage with converted content and attachments
+        if attachments:
+            messages = [fp.ProtocolMessage(role="user", content=poe_content, attachments=attachments)]
         else:
-            data.append({"url": "https://example.com/edited_image.png"})
+            messages = [fp.ProtocolMessage(role="user", content=poe_content)]
         
-        return {
-            "created": int(time.time()),
-            "data": data
-        }
+        # Generate multiple images by making multiple requests
+        data = []
+        successful_generations = 0
+        
+        for i in range(num_images):
+            try:
+                file_result = await get_first_file_from_bot(model, messages, api_key)
+                
+                if file_result:
+                    if response_format == "b64_json":
+                        async with httpx.AsyncClient() as client:
+                            img_response = await client.get(file_result.url)
+                            img_base64 = base64.b64encode(img_response.content).decode()
+                            data.append({"b64_json": img_base64})
+                    else:
+                        data.append({"url": file_result.url})
+                    
+                    successful_generations += 1
+                else:
+                    print(f"Warning: Failed to generate image {i+1}/{num_images}")
+                    
+            except Exception as e:
+                print(f"Warning: Error generating image {i+1}/{num_images}: {e}")
+                continue
+        
+        if successful_generations > 0:
+            return {
+                "created": int(time.time()),
+                "data": data
+            }
         
     except Exception as e:
         error_message, error_data, error_type, error_id = parse_poe_error(e)
@@ -1168,6 +1221,12 @@ async def image_edits(
             status_code=500,
             detail={"error": {"message": error_message, "type": error_type}}
         )
+    
+    # If we get here, no file was returned
+    raise HTTPException(
+        status_code=500,
+        detail={"error": {"message": "Failed to edit image - no file returned from bot", "type": "image_edit_error"}}
+    )
 
 
 async def generate_poe_bot_response_with_files(
@@ -1191,11 +1250,12 @@ async def generate_poe_bot_response_with_files(
             if is_replace_response:
                 accumulated_text = ""
                 
+            # Just accumulate text, handle attachments separately
             accumulated_text += message.text
             
-            if hasattr(message, 'attachment') and message.attachment:
+            # Collect attachments separately
+            if message.attachment:
                 received_files.append(message.attachment)
-                accumulated_text += f"\n{message.attachment.url}"
                 
             response["content"] = accumulated_text
                 
@@ -1210,6 +1270,11 @@ async def generate_poe_bot_response_with_files(
             )
         
         raise
+        
+    # Add all attachment URLs at the end
+    if received_files:
+        for attachment in received_files:
+            response["content"] += f"\n{attachment.url}\n"
         
     return response
 
