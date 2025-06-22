@@ -374,6 +374,7 @@ function ApiQuickstart() {
     const [models, setModels] = useState([])
     const [modelsLoading, setModelsLoading] = useState(false)
     const [modelsError, setModelsError] = useState('')
+    const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
 
     const exampleTabs = [
         { id: 'javascript', label: 'JavaScript' },
@@ -490,19 +491,16 @@ const openai = new OpenAI({
   baseURL: "${API_BASE_URL}",
 });
 
-async function main() {
-  const chatCompletion = await openai.chat.completions.create({
-    model: '${defaultModel}',
-    messages: [
-      { role: 'system', content: 'You are a helpful assistant.' },
-      { role: 'user', content: 'Hello, how are you today?' }
-    ],
-  });
 
-  console.log(chatCompletion.choices[0].message.content);
-}
+const chatCompletion = await openai.chat.completions.create({
+  model: '${defaultModel}',
+  messages: [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'Hello, how are you today?' }
+  ],
+});
 
-main();
+console.log(chatCompletion.choices[0].message.content);
 `
 
     const pythonCode = `
@@ -529,7 +527,22 @@ print(chat_completion.choices[0].message.content)
 
     return (
         <div className="api-docs">
-            <h1>Unofficial Poe API Bridge Documentation</h1>
+            <div className="docs-header">
+                <h1 className="docs-title">Unofficial Poe API Bridge Documentation</h1>
+                <div className="github-link">
+                    <a
+                        href="https://github.com/kamilio/poe-api-bridge"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="github-button"
+                    >
+                        <svg className="github-icon" viewBox="0 0 16 16">
+                            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                        </svg>
+                        View on GitHub
+                    </a>
+                </div>
+            </div>
 
             <p>
                 This API bridge provides OpenAI-compatible access to Poe's bot ecosystem.
@@ -658,50 +671,64 @@ print(chat_completion.choices[0].message.content)
                 )}
             </div>
 
-            <h2><Bot size={20} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px' }} />Available Models</h2>
-            <p>Access all Poe bots through this API bridge including these. Check out <a href="https://poe.com/explore?category=Official" target="_blank" rel="noopener noreferrer">all official bots</a> and <a href="https://poe.com/explore?category=Image+generation" target="_blank" rel="noopener noreferrer">image generation bots</a>.</p>
+            {/* Add the API Playground component */}
+            <ApiPlayground defaultModel={defaultModel} />
 
-            {modelsLoading && <p>Loading available models...</p>}
+            <div className="playground-section">
+                <div className="playground-container">
+                    <button
+                        className="playground-toggle"
+                        onClick={() => setIsModelsCollapsed(!isModelsCollapsed)}
+                    >
+                        <span className="playground-title"><Bot size={20} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px' }} />Available Models</span>
+                        <span className="toggle-icon">{isModelsCollapsed ? '▼' : '▲'}</span>
+                    </button>
 
-            {modelsError && (
-                <div className="error-message">
-                    <p>Error loading models: {modelsError}</p>
-                    <p>Showing recommended models instead:</p>
-                </div>
-            )}
+                    {!isModelsCollapsed && (
+                        <div className="playground-content">
+                            <p>Access all Poe bots through this API bridge including these. Check out <a href="https://poe.com/explore?category=Official" target="_blank" rel="noopener noreferrer">all official bots</a> and <a href="https://poe.com/explore?category=Image+generation" target="_blank" rel="noopener noreferrer">image generation bots</a>.</p>
 
-            <table>
-                <thead>
-                    <tr>
-                        <th>Model ID</th>
-                        <th>Modality</th>
-                        <th>Token Length</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {models && models.length > 0 && models.map((model, index) => (
-                        <tr key={index}>
-                            <td><InlineCode copyable={true}>{model.id}</InlineCode></td>
-                            <td>{model.capabilities?.multimodal ? "text→text, image→text" : "text→text"}</td>
-                            <td>{formatTokenCount(model.tokenCount)}</td>
-                        </tr>
-                    ))}
-                    {(!models || models.length === 0) && (
-                        <tr>
-                            <td colSpan="3" style={{ textAlign: "center" }}>No models available</td>
-                        </tr>
+                            {modelsLoading && <p>Loading available models...</p>}
+
+                            {modelsError && (
+                                <div className="error-message">
+                                    <p>Error loading models: {modelsError}</p>
+                                    <p>Showing recommended models instead:</p>
+                                </div>
+                            )}
+
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Model ID</th>
+                                        <th>Modality</th>
+                                        <th>Token Length</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {models && models.length > 0 && models.map((model, index) => (
+                                        <tr key={index}>
+                                            <td><InlineCode copyable={true}>{model.id}</InlineCode></td>
+                                            <td>{model.capabilities?.multimodal ? "text→text, image→text" : "text→text"}</td>
+                                            <td>{formatTokenCount(model.tokenCount)}</td>
+                                        </tr>
+                                    ))}
+                                    {(!models || models.length === 0) && (
+                                        <tr>
+                                            <td colSpan="3" style={{ textAlign: "center" }}>No models available</td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     )}
-                </tbody>
-            </table>
-
+                </div>
+            </div>
 
             <div className="info-box" style={{ marginTop: "2rem" }}>
                 <strong><HelpCircle size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />Support</strong>
                 <p>For questions, bug reports, or feature requests: <a href="https://docs.google.com/forms/d/e/1FAIpQLScTOeInU9c0gCC3yolhPkU05TPbZTf68jcDGECIm8nq0u9Yrg/viewform?usp=header" target="_blank" rel="noopener noreferrer">Submit feedback</a></p>
             </div>
-
-            {/* Add the API Playground component */}
-            <ApiPlayground defaultModel={defaultModel} />
         </div>
     )
 }
