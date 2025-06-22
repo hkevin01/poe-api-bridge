@@ -35,6 +35,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_poe.client import get_bot_response
 from pydantic import BaseModel, Field
 
+# Fake tool calling import
+from fake_tool_calling import FakeToolCallHandler
+
 # Create the FastAPI app
 app = FastAPI(
     title="Poe-API OpenAI Proxy",
@@ -80,6 +83,9 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: Optional[float] = 0
     logit_bias: Optional[Dict[int, float]] = None
     user: Optional[str] = None
+    # Tool calling support
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
 
 
 class EmbeddingRequest(BaseModel):
@@ -437,6 +443,11 @@ async def chat_completions(
 ):
 
     try:
+        # Handle tool calling requests
+        if request.tools:
+            handler = FakeToolCallHandler()
+            return await handler.process_request(request, api_key)
+        
         # Validate model first
         model = normalize_model(request.model)
 

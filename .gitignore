@@ -41,3 +41,6 @@ ENV/
 .idea/
 /.env
 .venv
+
+# Logs
+logs/
