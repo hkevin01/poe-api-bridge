@@ -31,7 +31,6 @@ def test_regular_query():
         f"{BASE_URL}/v1/chat/completions", headers=headers, json=test_data
     )
 
-
     if response.status_code == 200:
         result = response.json()
         if "choices" in result and result["choices"][0].get("message", {}).get(
@@ -47,7 +46,9 @@ def test_streaming_query():
     # Get port from environment or use default 8080
     port = os.environ.get("SERVER_PORT", "8080")
     # Try to get base URL from environment variable, fall back to local URL if not present
-    BASE_URL = os.environ.get("OPENAI_COMPATIBLE_API_BASE_URL", f"http://localhost:{port}")
+    BASE_URL = os.environ.get(
+        "OPENAI_COMPATIBLE_API_BASE_URL", f"http://localhost:{port}"
+    )
     API_KEY = os.environ["POE_API_KEY"]
 
     if not API_KEY:

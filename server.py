@@ -42,9 +42,8 @@ from fake_tool_calling import FakeToolCallHandler
 app = FastAPI(
     title="Poe-API OpenAI Proxy",
     version="1.0.0",
-    description="A proxy server for Poe API that provides OpenAI-compatible endpoints"
+    description="A proxy server for Poe API that provides OpenAI-compatible endpoints",
 )
-
 
 
 # Add CORS middleware configuration
@@ -150,7 +149,7 @@ def create_error_response(
 def normalize_model(model: str):
     # trim any whitespace from the model name
     model = model.strip()
-    
+
     # No validation and normalization - we pass through the model name as provided
     # Model validation is handled by the Poe API service
     return model
@@ -210,10 +209,6 @@ async def get_api_key(
 ) -> str:
     """Extracts and validates the API key from the authorization header"""
     return credentials.credentials
-
-
-
-
 
 
 def normalize_role(role: str):
@@ -289,34 +284,32 @@ async def process_base64_image(data_url: str, api_key: str) -> fp.Attachment:
         # Parse data URL: data:image/jpeg;base64,/9j/4AAQ...
         if not data_url.startswith("data:"):
             raise ValueError("Invalid data URL format")
-        
+
         header, data = data_url.split(";base64,", 1)
         mime_type = header[5:]  # Remove 'data:'
-        
+
         # Decode base64 data
         file_data = base64.b64decode(data)
-        
+
         # Determine file extension from MIME type
         extension_map = {
             "image/jpeg": "jpg",
             "image/png": "png",
             "image/webp": "webp",
             "image/gif": "gif",
-            "application/pdf": "pdf"
+            "application/pdf": "pdf",
         }
-        
+
         extension = extension_map.get(mime_type, "bin")
         file_name = f"uploaded_file.{extension}"
-        
+
         # Upload to Poe using raw bytes
         attachment = await fp.upload_file(
-            file=file_data,
-            file_name=file_name,
-            api_key=api_key
+            file=file_data, file_name=file_name, api_key=api_key
         )
-        
+
         return attachment
-        
+
     except Exception as e:
         raise ValueError(f"Failed to process base64 image: {str(e)}")
 
@@ -325,34 +318,33 @@ async def process_image_url(url: str, api_key: str) -> fp.Attachment:
     """Convert image URL to Poe attachment"""
     try:
         # Upload via URL (Poe will download it)
-        attachment = await fp.upload_file(
-            file_url=url,
-            api_key=api_key
-        )
-        
+        attachment = await fp.upload_file(file_url=url, api_key=api_key)
+
         return attachment
-        
+
     except Exception as e:
         raise ValueError(f"Failed to process image URL: {str(e)}")
 
 
-async def convert_openai_content_to_poe(content: List[Dict], api_key: str) -> tuple[str, List[fp.Attachment]]:
+async def convert_openai_content_to_poe(
+    content: List[Dict], api_key: str
+) -> tuple[str, List[fp.Attachment]]:
     """
     Convert OpenAI message content array to Poe format.
     Returns (text_content, attachments_list)
     """
     text_parts = []
     attachments = []
-    
+
     for comp in content:
         if isinstance(comp, dict):
             if comp.get("type") == "text" and "text" in comp:
                 text_parts.append(comp["text"])
-                
+
             elif comp.get("type") == "image_url":
                 image_url_obj = comp.get("image_url", {})
                 url = image_url_obj.get("url", "")
-                
+
                 if url:
                     try:
                         if url.startswith("data:"):
@@ -369,7 +361,7 @@ async def convert_openai_content_to_poe(content: List[Dict], api_key: str) -> tu
                         # Fallback to text representation if upload fails
                         text_parts.append(f"[Image (upload failed): {url}]")
                         print(f"Warning: {e}")
-                        
+
             elif comp.get("type") == "image":
                 # Handle legacy "image" type
                 image_url = comp.get("image_url", "")
@@ -386,7 +378,7 @@ async def convert_openai_content_to_poe(content: List[Dict], api_key: str) -> tu
                     except ValueError as e:
                         text_parts.append(f"[Image: {image_url}]")
                         print(f"Warning: {e}")
-    
+
     return " ".join(text_parts), attachments
 
 
@@ -438,8 +430,7 @@ def count_message_tokens(
 @app.post("/v1/chat/completions")
 @app.post("//v1/chat/completions")
 async def chat_completions(
-    request: ChatCompletionRequest,
-    api_key: str = Depends(get_api_key)
+    request: ChatCompletionRequest, api_key: str = Depends(get_api_key)
 ):
 
     try:
@@ -447,7 +438,7 @@ async def chat_completions(
         if request.tools:
             handler = FakeToolCallHandler()
             return await handler.process_request(request, api_key)
-        
+
         # Validate model first
         model = normalize_model(request.model)
 
@@ -474,7 +465,9 @@ async def chat_completions(
             if isinstance(content, list):
                 # Handle multimodal content with files/images
                 try:
-                    text_content, file_attachments = await convert_openai_content_to_poe(content, api_key)
+                    text_content, file_attachments = (
+                        await convert_openai_content_to_poe(content, api_key)
+                    )
                     content = text_content
                     attachments = file_attachments
                 except Exception as e:
@@ -486,14 +479,20 @@ async def chat_completions(
                             if comp.get("type") == "text" and "text" in comp:
                                 parts.append(comp["text"])
                             elif comp.get("type") == "image_url":
-                                parts.append(f"[Image: {comp.get('image_url', {}).get('url', '')}]")
+                                parts.append(
+                                    f"[Image: {comp.get('image_url', {}).get('url', '')}]"
+                                )
                             elif comp.get("type") == "image":
                                 parts.append(f"[Image: {comp.get('image_url', '')}]")
                     content = " ".join(parts)
 
             # Create ProtocolMessage with or without attachments
             if attachments:
-                messages.append(fp.ProtocolMessage(role=role, content=content, attachments=attachments))
+                messages.append(
+                    fp.ProtocolMessage(
+                        role=role, content=content, attachments=attachments
+                    )
+                )
             else:
                 messages.append(fp.ProtocolMessage(role=role, content=content))
 
@@ -513,11 +512,15 @@ async def chat_completions(
             )
 
         # For non-streaming, accumulate the full response
-        response = await generate_poe_bot_response_with_files(request.model, messages, api_key)
+        response = await generate_poe_bot_response_with_files(
+            request.model, messages, api_key
+        )
 
         # Calculate token counts
         token_counts = count_message_tokens(messages)
-        response_tokens = count_tokens(response["content"] if isinstance(response, dict) else "")
+        response_tokens = count_tokens(
+            response["content"] if isinstance(response, dict) else ""
+        )
         token_counts["completion_tokens"] = response_tokens
         token_counts["total_tokens"] = token_counts["prompt_tokens"] + response_tokens
 
@@ -534,7 +537,11 @@ async def chat_completions(
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": response["content"] if isinstance(response, dict) else str(response),
+                        "content": (
+                            response["content"]
+                            if isinstance(response, dict)
+                            else str(response)
+                        ),
                     },
                     "finish_reason": finish_reason,
                 }
@@ -672,7 +679,11 @@ async def stream_response(
 
 
 async def create_stream_chunk(
-    message_text: str, model: str, format_type: str, is_first_chunk: bool = False, is_replace_response: bool = False
+    message_text: str,
+    model: str,
+    format_type: str,
+    is_first_chunk: bool = False,
+    is_replace_response: bool = False,
 ):
     """Common function to create streaming response chunks"""
     chunk_id = os.urandom(12).hex()
@@ -714,7 +725,11 @@ async def create_stream_chunk(
             ],
         }
     else:  # poe format
-        return {"response": message_text, "done": False, "is_replace": is_replace_response}
+        return {
+            "response": message_text,
+            "done": False,
+            "is_replace": is_replace_response,
+        }
 
 
 async def create_final_chunk(
@@ -757,8 +772,6 @@ async def create_final_chunk(
         return result
 
 
-
-
 async def stream_response_with_replace(
     model: str, messages: list[fp.ProtocolMessage], api_key: str, format_type: str
 ):
@@ -769,7 +782,7 @@ async def stream_response_with_replace(
 
     # Calculate prompt tokens before starting stream
     token_counts = count_message_tokens(messages)
-    
+
     try:
         async for message in get_bot_response(
             messages=messages,
@@ -778,24 +791,24 @@ async def stream_response_with_replace(
             skip_system_prompt=True,
         ):
             # Check if message should replace previous content
-            is_replace_response = getattr(message, 'is_replace_response', False)
-            
+            is_replace_response = getattr(message, "is_replace_response", False)
+
             # If this is a replace message, reset accumulated response
             if is_replace_response:
                 accumulated_response = ""  # Reset accumulated response
-                
+
             # Handle attachment URLs
             message_text = message.text
             if message.attachment:
                 message_text += f"\n{message.attachment.url}"
-            
+
             chunk = await create_stream_chunk(
                 message_text, model, format_type, first_chunk, is_replace_response
             )
-            
+
             # Accumulate the text (this starts fresh if we just reset)
             accumulated_response += message_text
-            
+
             yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
             first_chunk = False
             await asyncio.sleep(0)  # Allow event loop to process
@@ -867,10 +880,10 @@ async def stream_completions_format_with_files(
             messages=messages, bot_name=model, api_key=api_key, skip_system_prompt=True
         ):
             message_text = message.text
-            
+
             if message.attachment:
                 message_text += f"\n{message.attachment.url}"
-            
+
             chunk = await create_stream_chunk(
                 message_text, model, "completion", first_chunk
             )
@@ -914,10 +927,12 @@ async def stream_completions_format_with_files(
 # Mount the static directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     # Serve the static HTML file
     return FileResponse("static/index.html")
+
 
 @app.get("/v1/", response_class=HTMLResponse)
 async def v1_root():
@@ -927,10 +942,7 @@ async def v1_root():
 
 # Simple exception handler without logging
 @app.exception_handler(Exception)
-async def global_exception_handler(
-    request: Request,
-    exc: Exception
-):
+async def global_exception_handler(request: Request, exc: Exception):
     # For HTTPExceptions, return their predefined responses
     if isinstance(exc, HTTPException):
         return JSONResponse(
@@ -954,83 +966,59 @@ async def global_exception_handler(
     )
 
 
-
-
 @app.get("/models")
 @app.get("/v1/models")
 @app.get("//v1/models")  # Handle double slash case like other endpoints
 async def list_models_openai():
     # Return list of available models in OpenAI-compatible format
     model_configs = [
-        {
-            "id": "Claude-Sonnet-4",
-            "context_window": 200000
-        },
-        {
-            "id": "Claude-Opus-4",
-            "context_window": 200000
-        },
-        {
-            "id": "Claude-3.7-Sonnet",
-            "context_window": 200000
-        },
-        {
-            "id": "Claude-3.5-Sonnet",
-            "context_window": 200000
-        },
+        {"id": "Claude-Sonnet-4", "context_window": 200000},
+        {"id": "Claude-Opus-4", "context_window": 200000},
+        {"id": "Claude-3.7-Sonnet", "context_window": 200000},
+        {"id": "Claude-3.5-Sonnet", "context_window": 200000},
         # GPT models
-        {
-            "id": "GPT-4o",
-            "context_window": 128000
-        },
-        {
-            "id": "GPT-4o-mini",
-            "context_window": 128000
-        },
+        {"id": "GPT-4o", "context_window": 128000},
+        {"id": "GPT-4o-mini", "context_window": 128000},
         # Gemini models
-        {
-            "id": "Gemini-2.0-Flash",
-            "context_window": 1000000
-        },
-        {
-            "id": "Gemini-2.5-Pro-Exp",
-            "context_window": 1000000
-        },
+        {"id": "Gemini-2.0-Flash", "context_window": 1000000},
+        {"id": "Gemini-2.5-Pro-Exp", "context_window": 1000000},
     ]
-    
+
     # Create timestamp for all models
     creation_time = int(datetime.now().timestamp())
-    
+
     # Convert model configs to OpenAI-compatible model objects with limited capabilities
     model_objects = []
     for config in model_configs:
         model_id = config["id"]
         context_window = config["context_window"]
-        
-        model_objects.append({
-            "id": model_id,
-            "object": "model",
-            "created": creation_time,
-            "owned_by": "poe-api-bridge",
-            "context_window": context_window,
-            "permission": [
-                {
-                    "id": f"modelperm-{model_id.lower().replace('-', '')}",
-                    "object": "model_permission",
-                    "created": creation_time,
-                    "allow_create_engine": False,
-                    "allow_sampling": False,
-                    "allow_logprobs": False,
-                    "allow_search_indices": False,
-                    "allow_view": True,
-                    "allow_fine_tuning": False,
-                    "organization": "*",
-                    "group": None,
-                    "is_blocking": False
-                }
-            ]
-        })
-    
+
+        model_objects.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "created": creation_time,
+                "owned_by": "poe-api-bridge",
+                "context_window": context_window,
+                "permission": [
+                    {
+                        "id": f"modelperm-{model_id.lower().replace('-', '')}",
+                        "object": "model_permission",
+                        "created": creation_time,
+                        "allow_create_engine": False,
+                        "allow_sampling": False,
+                        "allow_logprobs": False,
+                        "allow_search_indices": False,
+                        "allow_view": True,
+                        "allow_fine_tuning": False,
+                        "organization": "*",
+                        "group": None,
+                        "is_blocking": False,
+                    }
+                ],
+            }
+        )
+
     return {
         "object": "list",
         "data": model_objects,
@@ -1040,10 +1028,7 @@ async def list_models_openai():
 @app.post("/completions")
 @app.post("/v1/completions")
 @app.post("//v1/completions")
-async def completions(
-    request: Request,
-    api_key: str = Depends(get_api_key)
-):
+async def completions(request: Request, api_key: str = Depends(get_api_key)):
     body = await request.json()
 
     messages = [fp.ProtocolMessage(role="user", content=body.get("prompt", ""))]
@@ -1085,9 +1070,9 @@ async def completions(
     }
 
 
-
-
-async def get_first_file_from_bot(model: str, messages: list[fp.ProtocolMessage], api_key: str):
+async def get_first_file_from_bot(
+    model: str, messages: list[fp.ProtocolMessage], api_key: str
+):
     first_file = None
     async for message in get_bot_response(
         messages=messages,
@@ -1105,23 +1090,22 @@ async def get_first_file_from_bot(model: str, messages: list[fp.ProtocolMessage]
 @app.post("/v1/images/generations")
 @app.post("//v1/images/generations")
 async def image_generations(
-    request: ImageGenerationRequest,
-    api_key: str = Depends(get_api_key)
+    request: ImageGenerationRequest, api_key: str = Depends(get_api_key)
 ):
     try:
         model = normalize_model(request.model or "Imagen-3-Fast")
         num_images = max(1, min(request.n or 1, 10))  # Limit to reasonable range
-        
+
         messages = [fp.ProtocolMessage(role="user", content=request.prompt)]
-        
+
         # Generate multiple images by making multiple requests
         data = []
         successful_generations = 0
-        
+
         for i in range(num_images):
             try:
                 file_result = await get_first_file_from_bot(model, messages, api_key)
-                
+
                 if file_result:
                     if request.response_format == "b64_json":
                         async with httpx.AsyncClient() as client:
@@ -1130,32 +1114,34 @@ async def image_generations(
                             data.append({"b64_json": img_base64})
                     else:
                         data.append({"url": file_result.url})
-                    
+
                     successful_generations += 1
                 else:
                     print(f"Warning: Failed to generate image {i+1}/{num_images}")
-                    
+
             except Exception as e:
                 print(f"Warning: Error generating image {i+1}/{num_images}: {e}")
                 continue
-        
+
         if successful_generations > 0:
-            return {
-                "created": int(time.time()),
-                "data": data
-            }
-        
+            return {"created": int(time.time()), "data": data}
+
     except Exception as e:
         error_message, error_data, error_type, error_id = parse_poe_error(e)
         raise HTTPException(
             status_code=500,
-            detail={"error": {"message": error_message, "type": error_type}}
+            detail={"error": {"message": error_message, "type": error_type}},
         )
-    
+
     # If we get here, no file was returned
     raise HTTPException(
         status_code=500,
-        detail={"error": {"message": "Failed to generate image - no file returned from bot", "type": "image_generation_error"}}
+        detail={
+            "error": {
+                "message": "Failed to generate image - no file returned from bot",
+                "type": "image_generation_error",
+            }
+        },
     )
 
 
@@ -1170,39 +1156,48 @@ async def image_edits(
     size: Optional[str] = Form(None),
     response_format: Optional[str] = Form("url"),
     mask: Optional[UploadFile] = File(None),
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_api_key),
 ):
     try:
         model = normalize_model(model or "StableDiffusionXL")
         num_images = max(1, min(n or 1, 10))  # Limit to reasonable range
-        
+
         # Read the image file and convert to base64
         image_content = await image.read()
         image_b64 = base64.b64encode(image_content).decode()
-        
+
         # Create OpenAI-style multimodal content
         openai_content = [
             {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+            },
         ]
-        
+
         # Convert OpenAI content to Poe format using existing function
-        poe_content, attachments = await convert_openai_content_to_poe(openai_content, api_key)
-        
+        poe_content, attachments = await convert_openai_content_to_poe(
+            openai_content, api_key
+        )
+
         # Create ProtocolMessage with converted content and attachments
         if attachments:
-            messages = [fp.ProtocolMessage(role="user", content=poe_content, attachments=attachments)]
+            messages = [
+                fp.ProtocolMessage(
+                    role="user", content=poe_content, attachments=attachments
+                )
+            ]
         else:
             messages = [fp.ProtocolMessage(role="user", content=poe_content)]
-        
+
         # Generate multiple images by making multiple requests
         data = []
         successful_generations = 0
-        
+
         for i in range(num_images):
             try:
                 file_result = await get_first_file_from_bot(model, messages, api_key)
-                
+
                 if file_result:
                     if response_format == "b64_json":
                         async with httpx.AsyncClient() as client:
@@ -1211,32 +1206,34 @@ async def image_edits(
                             data.append({"b64_json": img_base64})
                     else:
                         data.append({"url": file_result.url})
-                    
+
                     successful_generations += 1
                 else:
                     print(f"Warning: Failed to generate image {i+1}/{num_images}")
-                    
+
             except Exception as e:
                 print(f"Warning: Error generating image {i+1}/{num_images}: {e}")
                 continue
-        
+
         if successful_generations > 0:
-            return {
-                "created": int(time.time()),
-                "data": data
-            }
-        
+            return {"created": int(time.time()), "data": data}
+
     except Exception as e:
         error_message, error_data, error_type, error_id = parse_poe_error(e)
         raise HTTPException(
             status_code=500,
-            detail={"error": {"message": error_message, "type": error_type}}
+            detail={"error": {"message": error_message, "type": error_type}},
         )
-    
+
     # If we get here, no file was returned
     raise HTTPException(
         status_code=500,
-        detail={"error": {"message": "Failed to edit image - no file returned from bot", "type": "image_edit_error"}}
+        detail={
+            "error": {
+                "message": "Failed to edit image - no file returned from bot",
+                "type": "image_edit_error",
+            }
+        },
     )
 
 
@@ -1246,47 +1243,47 @@ async def generate_poe_bot_response_with_files(
     model = normalize_model(model)
     accumulated_text = ""
     received_files = []
-    
+
     try:
         response = {"role": "assistant", "content": ""}
-        
+
         async for message in get_bot_response(
             messages=messages,
             bot_name=model,
             api_key=api_key,
             skip_system_prompt=True,
         ):
-            is_replace_response = getattr(message, 'is_replace_response', False)
-            
+            is_replace_response = getattr(message, "is_replace_response", False)
+
             if is_replace_response:
                 accumulated_text = ""
-                
+
             # Just accumulate text, handle attachments separately
             accumulated_text += message.text
-            
+
             # Collect attachments separately
             if message.attachment:
                 received_files.append(message.attachment)
-                
+
             response["content"] = accumulated_text
-                
+
     except Exception as e:
         error_message, error_data, error_type, error_id = parse_poe_error(e)
-        
+
         if error_data:
             raise PoeAPIError(
                 f"Poe API Error: {error_message}",
                 error_data=error_data,
                 error_id=error_id,
             )
-        
+
         raise
-        
+
     # Add all attachment URLs at the end
     if received_files:
         for attachment in received_files:
             response["content"] += f"\n{attachment.url}\n"
-        
+
     return response
 
 
@@ -1306,12 +1303,12 @@ async def generate_poe_bot_response(
             skip_system_prompt=True,
         ):
             # Check if message should replace previous content
-            is_replace_response = getattr(message, 'is_replace_response', False)
-            
+            is_replace_response = getattr(message, "is_replace_response", False)
+
             # If this is a replace message, reset accumulated response
             if is_replace_response:
                 accumulated_text = ""  # Reset accumulated text
-                
+
             # Accumulate the text (will start fresh if is_replace_response was True)
             accumulated_text += message.text
             response["content"] = accumulated_text
@@ -1339,6 +1336,7 @@ async def stream_openai_format(
     async for chunk in stream_response_with_replace(model, messages, api_key, "chat"):
         yield chunk
 
+
 @app.get("/openapi.json")
 async def get_openapi_json():
     if app.openapi_schema:
@@ -1356,4 +1354,3 @@ async def get_openapi_json():
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
-

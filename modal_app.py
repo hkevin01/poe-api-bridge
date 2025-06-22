@@ -4,10 +4,12 @@ from server import app as fastapi_app
 # Create a Stub object - this is the main entry point for Modal
 app = App("poe-api-bridge")
 
+
 # Read requirements from requirements-prod.txt
 def read_requirements():
     with open("requirements-prod.txt", "r") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
 
 REQUIREMENTS = read_requirements()
 
@@ -19,10 +21,8 @@ image = (
     .add_local_dir("static", "/root/static")
 )
 
-@app.cls(
-    image=image,
-    secrets=[Secret.from_dotenv()]
-)
+
+@app.cls(image=image, secrets=[Secret.from_dotenv()])
 class PoeApiBridge:
     @asgi_app()
     def fastapi_app(self):
