@@ -11,15 +11,25 @@ client = OpenAI(
 )
 
 stream = client.chat.completions.create(
-    model="BetterDevBot",
-    messages=[{"role": "user", "content": "openai_test_case_replace_response"}],
+    model="Mercury-Coder-Small", # Mercury-Coder-Small uses diffusion instead of streaming https://platform.inceptionlabs.ai/docs#getting-started
+    messages=[{"role": "user", "content": "Repeat this: 'Hello'"}],
     stream=True,
 )
 
-full_content = ""
-for chunk in stream:
-    if chunk.choices[0].delta.content:
-        full_content += chunk.choices[0].delta.content
+full_content_replace = ""
+replace_mode = True  # This would be determined by server logic
 
-print(f"✅ Replace response: {full_content}")
-assert "Final Response" in full_content
+for chunk in stream:
+    choice = chunk.choices[0]
+    if choice.delta and choice.delta.content is not None:
+        if replace_mode:
+            # Replace content on each chunk (is_replace_response behavior)
+            full_content_replace = choice.delta.content or ''
+            print(f"🔄 Replacing with: '{full_content_replace}'")
+        else:
+            # Accumulate content (normal streaming behavior)
+            full_content_replace += choice.delta.content
+            print(f"➕ Accumulating: '{choice.delta.content}' (total: '{full_content_replace}')")
+
+print(f"✅ Final replace response: {full_content_replace}")
+assert "Hello" in full_content_replace

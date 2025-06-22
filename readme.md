@@ -26,7 +26,7 @@ Provide a **work on file experience** where you submit content for processing or
 
 Both endpoint types support the same underlying bots and multimodal capabilities - the difference is in how they structure the interaction pattern for different use cases.
 
-## Tools
+## Tool Calling
 
 Poe has limited support for tools with a non-conventional API requiring users to provide Python executors. Many applications require tool usage, so this project implements "fake" tool calling via prompting and XML parsing. In theory, this approach can work with any bot, even those that don't natively support tool calling. See the specification in [`docs/fake_tool_calling_spec.md`](docs/fake_tool_calling_spec.md) for more details.
 
@@ -43,11 +43,16 @@ The bridge reports usage statistics in the standard OpenAI format:
 }
 ```
 
-Take the token counting with a grain of salt - it uses tiktoken to count tokens. Poe doesn't report these numbers, so the counts might differ from actual tokens, especially on non-OpenAI models.
+Take the token counting with a grain of salt - it uses tiktoken to count tokens. Poe doesn't report these numbers, so the counts might differ from actual tokens, especially on non-OpenAI models. For some models like image gen, the numbers won't make sense at all. 
 
 ## Supported Applications
 
 I've tested Roo Code, Cline, and various other tools - they work reliably. Feel free to create an issue if something is broken.
+
+# Future work
+- Anthropic API - similar to https://github.com/1rgs/claude-code-proxy. It would be nice to use Claude Code with Poe. 
+- Audio API, maybe elevenlabs compat. LLMs are having hard time understanding that `images/generations` endpoint returns audio/video.
+- Native Tool Calling, as soon as Poe supports it.
 
 # Development
 
