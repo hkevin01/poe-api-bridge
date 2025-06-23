@@ -1,10 +1,11 @@
 <div align="center">
 <h1>Poe OpenAI Compatible API (Unofficial) <img src="https://psc2.cf2.poecdn.net/favicon.svg" height="35"></h1>
 
-<p><em>A convenient API wrapper for Poe.com</em></p>
+<p><em>Use your Poe.com subscription anywhere</em></p>
+<h2><a href="https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.modal.run" target="_blank">Try it here</a></h2>
 </div>
 
-**Try it here:** https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.modal.run
+
 
 Poe provides a [Python API](https://creator.poe.com/docs/external-application-guide), but it uses a custom format that requires custom providers, making it difficult to integrate into standard applications.
 
