@@ -1,4 +1,4 @@
-# Poe API Bridge
+# Poe OpenAI Compatible API (Unofficial)
 
 **Deployed app:** https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.modal.run
 

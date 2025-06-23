@@ -528,7 +528,7 @@ print(chat_completion.choices[0].message.content)
     return (
         <div className="api-docs">
             <div className="docs-header">
-                <h1 className="docs-title">Unofficial Poe API Bridge Documentation</h1>
+                <h1 className="docs-title">Poe OpenAI Compatible API (Unofficial)</h1>
                 <div className="github-link">
                     <a
                         href="https://github.com/kamilio/poe-api-bridge"
@@ -545,9 +545,9 @@ print(chat_completion.choices[0].message.content)
             </div>
 
             <p>
-                This API bridge provides OpenAI-compatible access to Poe's bot ecosystem.
+                This API provides OpenAI-compatible <InlineCode copyable={false}>/chat/completions</InlineCode> access to Poe's bot ecosystem.
                 Use your existing OpenAI SDK with minimal configuration changes to access
-                Claude, GPT-4, and other advanced models through a unified interface.
+                Claude, GPT-4o, and other advanced models through a unified interface.
             </p>
 
             <div className="quick-start-section">
@@ -556,13 +556,13 @@ print(chat_completion.choices[0].message.content)
                     <div className="step">
                         <div className="step-number">1</div>
                         <div className="step-content">
-                            <p>Create an account or login to <a href="https://poe.com" target="_blank" rel="noopener noreferrer">Poe</a></p>
+                            <p>Login to <a href="https://poe.com" target="_blank" rel="noopener noreferrer">Poe.com</a></p>
                         </div>
                     </div>
                     <div className="step">
                         <div className="step-number">2</div>
                         <div className="step-content">
-                            <p>Go to <a href="https://poe.com/api_key" target="_blank" rel="noopener noreferrer">API Keys</a> and get your API key.</p>
+                            <p>Get your <a href="https://poe.com/api_key" target="_blank" rel="noopener noreferrer">API Key</a></p>
                         </div>
                     </div>
                     <div className="step">
@@ -576,7 +576,7 @@ print(chat_completion.choices[0].message.content)
                                 </div>
                                 <div className="config-item">
                                     <span className="config-label">API Key:</span>
-                                    <InlineCode copyable={true}>YOUR_POE_API_KEY</InlineCode>
+                                    <InlineCode copyable={false}>YOUR_POE_API_KEY</InlineCode>
                                 </div>
                             </div>
                         </div>
@@ -585,14 +585,10 @@ print(chat_completion.choices[0].message.content)
             </div>
 
             <div className="api-docs-note">
-                <p><strong>Current Limitations:</strong></p>
+                <p><strong>Limitations:</strong></p>
                 <ul className="simple-list">
-                    <li>Prompt caching functionality is under development on Poe side.</li>
-                    <li>Tool calling is done via prompting/parsing. Poe doesn't support native Tool calling.</li>
+                    <li>Prompt caching functionality is not yet supported.</li>
                 </ul>
-                <p className="note-footer">
-                    Track development progress on <a href="https://github.com/poe-platform/fastapi_poe" target="_blank" rel="noopener noreferrer">GitHub</a>.
-                </p>
             </div>
 
 
@@ -726,8 +722,7 @@ print(chat_completion.choices[0].message.content)
             </div>
 
             <div className="info-box" style={{ marginTop: "2rem" }}>
-                <strong><HelpCircle size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />Support</strong>
-                <p>For questions, bug reports, or feature requests: <a href="https://docs.google.com/forms/d/e/1FAIpQLScTOeInU9c0gCC3yolhPkU05TPbZTf68jcDGECIm8nq0u9Yrg/viewform?usp=header" target="_blank" rel="noopener noreferrer">Submit feedback</a></p>
+                <p>For questions, bug reports, or feature requests, <a href="https://docs.google.com/forms/d/e/1FAIpQLScTOeInU9c0gCC3yolhPkU05TPbZTf68jcDGECIm8nq0u9Yrg/viewform?usp=header" target="_blank" rel="noopener noreferrer">get in touch</a>.</p>
             </div>
         </div>
     )
