@@ -9,7 +9,9 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+import requests
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -52,6 +54,11 @@ class ChatUsage(BaseModel):
 class ChatResponse(BaseModel):
     choices: List[ChatChoice]
     usage: Optional[ChatUsage] = None
+
+load_dotenv()
+
+POE_API_KEY = os.getenv("POE_API_KEY")
+POE_API_BASE_URL = os.getenv("POE_API_BASE_URL", "https://api.poe.com/v1")
 
 @app.get("/health")
 async def health_check():
@@ -125,22 +132,34 @@ async def chat_completions(request: ChatRequest):
 
 async def call_llm_api(prompt: str, model: str) -> str:
     """
-    Call the actual LLM API (Poe, OpenAI, etc.)
-    Replace this with your actual LLM integration
+    Call the Poe.com OpenAI-compatible API using the selected model.
     """
     try:
-        # For now, return a mock response
-        # In production, integrate with your actual LLM service
-        
-        if "claude" in model.lower():
-            return f"Hello! I'm Claude, and I can help you with your code. I see you're working on a project. Here's what I can tell you about the code you've shared:\n\n{generate_mock_response(prompt)}"
-        elif "gpt" in model.lower():
-            return f"Hello! I'm GPT, and I can help you with your code. I see you're working on a project. Here's what I can tell you about the code you've shared:\n\n{generate_mock_response(prompt)}"
-        else:
-            return f"Hello! I can help you with your code. I see you're working on a project. Here's what I can tell you about the code you've shared:\n\n{generate_mock_response(prompt)}"
-            
+        # Compose messages for Poe API (system + user)
+        # For now, treat the first line as system, rest as user
+        lines = prompt.split("\n")
+        system_message = lines[0] if lines else "You are a helpful assistant."
+        user_content = "\n".join(lines[1:]) if len(lines) > 1 else ""
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_content}
+        ]
+        headers = {
+            "Authorization": f"Bearer {POE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 1024,
+            "temperature": 0.7
+        }
+        response = requests.post(f"{POE_API_BASE_URL}/chat/completions", headers=headers, json=data, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"LLM API error: {e}")
+        logger.error(f"Poe API error: {e}")
         return f"I'm sorry, but I encountered an error while processing your request: {str(e)}"
 
 def generate_mock_response(prompt: str) -> str:
