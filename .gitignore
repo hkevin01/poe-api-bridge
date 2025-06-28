@@ -32,6 +32,25 @@ htmlcov/
 venv/
 env/
 ENV/
+.venv/
+
+# Environment variables and secrets
+.env*
+*.env
+.env.local
+.env.development
+.env.test
+.env.production
+secrets/
+secrets.json
+config.json
+credentials.json
+api-keys.txt
+api_keys.txt
+*.key
+*.pem
+*.p12
+*.pfx
 
 # macOS specific
 .DS_Store
@@ -39,8 +58,25 @@ ENV/
 # Development environment
 .vscode/
 .idea/
-/.env
-.venv
 
 # Logs
+*.log
 logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificate files
+*.crt
+*.cert
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Poe API specific
+poe-api-key.txt
+poe_token.txt
+poe_credentials.json
