@@ -1,8 +1,8 @@
-from modal import Image, App, asgi_app, Secret
+from modal import App, Image, Secret, asgi_app
 from server import app as fastapi_app
 
 # Create a Stub object - this is the main entry point for Modal
-app = App("poe-api-bridge")
+app = App("backend")
 
 
 # Read requirements from requirements-prod.txt

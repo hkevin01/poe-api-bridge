@@ -4,14 +4,18 @@ Fake Tool Calling Implementation for Poe API Bridge
 Provides OpenAI tools API compatibility using prompt engineering and XML parsing.
 """
 
+import asyncio
 import json
 import re
+import time
 import uuid
-from typing import Any, Dict, List, Optional, Union, Iterator
-import asyncio
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import fastapi_poe as fp
 from fastapi.responses import StreamingResponse
+
+# Import only safe types/constants at the top
+from server import normalize_model, normalize_role
 
 
 class FakeToolCallHandler:
@@ -42,9 +46,6 @@ class FakeToolCallHandler:
             request.messages, request.tools, request.tool_choice
         )
 
-        # Import here to avoid circular imports
-        from server import normalize_model, normalize_role, count_message_tokens
-
         model = normalize_model(request.model)
 
         # Convert messages to Poe format
@@ -63,7 +64,9 @@ class FakeToolCallHandler:
         if request.stream:
             # Handle streaming response
             return StreamingResponse(
-                self._stream_tool_aware_response(model, poe_messages, api_key, request),
+                self._stream_tool_aware_response(
+                    model, poe_messages, api_key, request
+                ),
                 headers={
                     "Content-Type": "text/event-stream",
                     "Cache-Control": "no-cache",
@@ -79,7 +82,8 @@ class FakeToolCallHandler:
             )
 
     def _inject_tools_into_messages(
-        self, messages: List, tools: List[Dict], tool_choice: Optional[Union[str, Dict]]
+        self, messages: List, tools: List[Dict], 
+        tool_choice: Optional[Union[str, Dict]]
     ) -> List:
         """Inject tool definitions into the system message."""
         if not tools:
@@ -92,7 +96,8 @@ class FakeToolCallHandler:
         instructions = self._build_tool_instructions(tool_choice)
 
         # Create enhanced system message
-        tool_prompt = f"""
+        tool_prompt = (
+            f"""
 {tools_xml}
 
 {instructions}
@@ -105,6 +110,7 @@ When using tools, respond with XML in this exact format:
 
 You can make multiple tool calls by using multiple <tool_call> blocks.
 """
+        )
 
         # Separate system message from other messages
         system_content = None
@@ -122,6 +128,9 @@ You can make multiple tool calls by using multiple <tool_call> blocks.
         else:
             combined_system_content = tool_prompt
 
+        # Import ChatCompletionMessage only here to avoid circular import
+        from server import ChatCompletionMessage
+
         # Create a new system message
         if messages:
             # Use the first message as a template for structure
@@ -135,8 +144,6 @@ You can make multiple tool calls by using multiple <tool_call> blocks.
             )
         else:
             # Fallback if no messages (shouldn't happen)
-            from server import ChatCompletionMessage
-
             system_msg = ChatCompletionMessage(
                 role="system", content=combined_system_content
             )
@@ -171,12 +178,21 @@ You can make multiple tool calls by using multiple <tool_call> blocks.
         tools_parts.append("</tools>")
         return "\n".join(tools_parts)
 
-    def _build_tool_instructions(self, tool_choice: Optional[Union[str, Dict]]) -> str:
+    def _build_tool_instructions(
+        self, tool_choice: Optional[Union[str, Dict]]
+    ) -> str:
         """Build tool usage instructions based on tool_choice."""
         if tool_choice == "none":
-            return "IMPORTANT: You are FORBIDDEN from using any tools. Do NOT use <tool_call> tags. Respond directly with natural language only. Never format your response with XML tool calls."
+            return (
+                "IMPORTANT: You are FORBIDDEN from using any tools. "
+                "Do NOT use <tool_call> tags. Respond directly with natural language only. "
+                "Never format your response with XML tool calls."
+            )
         elif tool_choice == "required":
-            return "You MUST use at least one tool to answer this request. Do not respond without making a tool call."
+            return (
+                "You MUST use at least one tool to answer this request. "
+                "Do not respond without making a tool call."
+            )
         elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
             func_name = tool_choice.get("function", {}).get("name", "")
             return f"You MUST use the '{func_name}' function to answer this request."
@@ -198,30 +214,28 @@ You can make multiple tool calls by using multiple <tool_call> blocks.
         if not matches:
             return content, []
 
-        # Extract tool calls
-        for match in matches:
-            name = match.group(1).strip()
+        # Process matches and build tool calls
+        for i, match in enumerate(matches):
+            tool_name = match.group(1).strip()
             arguments_str = match.group(2).strip()
 
-            # Generate unique ID for this tool call
-            call_id = f"call_{uuid.uuid4().hex[:8]}"
-
-            # Validate JSON arguments
             try:
-                json.loads(arguments_str)  # Validate JSON
+                arguments = json.loads(arguments_str)
             except json.JSONDecodeError:
-                # If invalid JSON, wrap in quotes as fallback
-                arguments_str = f'"{arguments_str}"'
+                # If JSON parsing fails, create a simple string argument
+                arguments = {"raw_content": arguments_str}
 
-            tool_calls.append(
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": name, "arguments": arguments_str},
-                }
-            )
+            tool_call = {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments, separators=(",", ":")),
+                },
+            }
+            tool_calls.append(tool_call)
 
-        # Remove tool call XML from content
+        # Remove tool calls from content
         cleaned_content = self.tool_call_pattern.sub("", content).strip()
 
         return cleaned_content, tool_calls
@@ -229,231 +243,226 @@ You can make multiple tool calls by using multiple <tool_call> blocks.
     async def _generate_tool_aware_response(
         self, model: str, messages: List[fp.ProtocolMessage], api_key: str, request
     ) -> Dict[str, Any]:
-        """Generate a non-streaming response with tool call parsing."""
-        from server import generate_poe_bot_response, count_message_tokens
+        """
+        Generate a non-streaming response with tool calling support.
 
-        # Get response from Poe
-        response_content = await generate_poe_bot_response(model, messages, api_key)
+        Args:
+            model: Model name
+            messages: List of Poe protocol messages
+            api_key: Poe API key
+            request: Original request object
 
-        # Handle case where generate_poe_bot_response returns a dict instead of string
-        if isinstance(response_content, dict):
-            # Extract text content from the response dict
-            response_text = (
-                response_content.get("content", "")
-                or response_content.get("text", "")
-                or str(response_content)
-            )
-        else:
-            response_text = response_content or ""
+        Returns:
+            OpenAI-compatible response dict
+        """
+        try:
+            from server import generate_poe_bot_response
+            response = await generate_poe_bot_response(model, messages, api_key)
 
-        # Parse for tool calls
-        cleaned_content, tool_calls = self._parse_tool_calls(response_text)
+            # Parse tool calls from response
+            content = response.get("content", "")
+            cleaned_content, tool_calls = self._parse_tool_calls(content)
 
-        # Count tokens
-        token_counts = count_message_tokens(messages, model)
-        completion_tokens = len(response_text.split()) if response_text else 0
+            # Build OpenAI-compatible response
+            response_data = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": cleaned_content if cleaned_content else None,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
 
-        # Build OpenAI-compatible response
-        choice = {
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": cleaned_content if cleaned_content else None,
-            },
-            "finish_reason": "tool_calls" if tool_calls else "stop",
-        }
+            # Add tool calls if present
+            if tool_calls:
+                response_data["choices"][0]["message"]["tool_calls"] = tool_calls
+                response_data["choices"][0]["finish_reason"] = "tool_calls"
 
-        # Add tool calls if present
-        if tool_calls:
-            choice["message"]["tool_calls"] = tool_calls
+            return response_data
 
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-            "object": "chat.completion",
-            "created": int(asyncio.get_event_loop().time()),
-            "model": model,
-            "choices": [choice],
-            "usage": {
-                "prompt_tokens": token_counts.get("prompt_tokens", 0),
-                "completion_tokens": completion_tokens,
-                "total_tokens": token_counts.get("total_tokens", 0) + completion_tokens,
-            },
-        }
+        except Exception as e:
+            # Handle errors
+            return {
+                "error": {
+                    "message": str(e),
+                    "type": "server_error",
+                }
+            }
 
     async def _stream_tool_aware_response(
         self, model: str, messages: List[fp.ProtocolMessage], api_key: str, request
-    ) -> Iterator[str]:
-        """Generate a streaming response with real-time tool call filtering."""
-        from server import stream_openai_format
+    ) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response with tool calling support.
 
-        # State for tool call detection and filtering
-        content_buffer = ""
-        tool_call_buffer = ""
-        in_tool_call = False
+        Args:
+            model: Model name
+            messages: List of Poe protocol messages
+            api_key: Poe API key
+            request: Original request object
 
-        async for chunk in stream_openai_format(model, messages, api_key):
-            if chunk.strip():
-                try:
-                    # Convert bytes to string if needed
-                    if isinstance(chunk, bytes):
-                        chunk_str = chunk.decode("utf-8")
-                    else:
-                        chunk_str = chunk
-
-                    # Extract content from chunk
-                    content_delta = ""
-                    modified_chunk = chunk_str
-
+        Yields:
+            Server-sent events in OpenAI format
+        """
+        try:
+            from server import stream_openai_format
+            async for chunk in stream_openai_format(model, messages, api_key):
+                # Convert chunk to string if it's bytes
+                if isinstance(chunk, bytes):
+                    chunk_str = chunk.decode('utf-8')
+                else:
+                    chunk_str = str(chunk)
+                
+                # Parse tool calls from chunk if it contains content
+                if "data: " in chunk_str:
+                    # Extract the JSON data from the chunk
                     if chunk_str.startswith("data: "):
-                        chunk_data = chunk_str[6:].strip()
-                        if chunk_data and chunk_data != "[DONE]":
-                            try:
-                                parsed = json.loads(chunk_data)
-                                delta = parsed.get("choices", [{}])[0].get("delta", {})
-                                content_delta = delta.get("content", "")
+                        data_part = chunk_str[6:]  # Remove "data: " prefix
+                        if data_part.strip() == "[DONE]":
+                            yield chunk_str
+                            continue
 
-                                if content_delta:
-                                    content_buffer += content_delta
-
-                                    # Process character by character to detect tool calls
-                                    filtered_content = ""
-                                    i = 0
-                                    while i < len(content_delta):
-                                        char = content_delta[i]
-
-                                        if not in_tool_call:
-                                            # Check if we're starting a tool call
-                                            temp_buffer = content_buffer
-                                            if "<tool_call>" in temp_buffer:
-                                                # Found start of tool call
-                                                start_pos = temp_buffer.rfind(
-                                                    "<tool_call>"
-                                                )
-                                                # Keep content before tool call
-                                                before_tool = temp_buffer[:start_pos]
-                                                if len(before_tool) > len(
-                                                    content_buffer
-                                                ) - len(content_delta):
-                                                    # This content was in the current delta
-                                                    chars_before = start_pos - (
-                                                        len(content_buffer)
-                                                        - len(content_delta)
-                                                    )
-                                                    if chars_before > 0:
-                                                        filtered_content += (
-                                                            content_delta[:chars_before]
-                                                        )
-
-                                                in_tool_call = True
-                                                tool_call_buffer = temp_buffer[
-                                                    start_pos:
-                                                ]
-                                                break
-                                            else:
-                                                filtered_content += char
-                                        else:
-                                            # We're in a tool call, add to buffer and check for end
-                                            tool_call_buffer += char
-                                            if tool_call_buffer.endswith(
-                                                "</tool_call>"
-                                            ):
-                                                # Tool call complete
-                                                _, tool_calls = self._parse_tool_calls(
-                                                    tool_call_buffer
-                                                )
-
-                                                if tool_calls:
-                                                    # Emit tool call chunks
-                                                    for idx, tool_call in enumerate(
-                                                        tool_calls
-                                                    ):
-                                                        tool_chunk = {
-                                                            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-                                                            "object": "chat.completion.chunk",
-                                                            "created": int(
-                                                                asyncio.get_event_loop().time()
-                                                            ),
-                                                            "model": model,
-                                                            "choices": [
-                                                                {
-                                                                    "index": 0,
-                                                                    "delta": {
-                                                                        "tool_calls": [
-                                                                            {
-                                                                                "index": idx,
-                                                                                "id": tool_call[
-                                                                                    "id"
-                                                                                ],
-                                                                                "type": "function",
-                                                                                "function": {
-                                                                                    "name": tool_call[
-                                                                                        "function"
-                                                                                    ][
-                                                                                        "name"
-                                                                                    ],
-                                                                                    "arguments": tool_call[
-                                                                                        "function"
-                                                                                    ][
-                                                                                        "arguments"
-                                                                                    ],
-                                                                                },
-                                                                            }
-                                                                        ]
-                                                                    },
-                                                                    "finish_reason": None,
-                                                                }
-                                                            ],
-                                                        }
-                                                        yield f"data: {json.dumps(tool_chunk)}\n\n"
-
-                                                    # Final chunk
-                                                    final_chunk = {
-                                                        "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-                                                        "object": "chat.completion.chunk",
-                                                        "created": int(
-                                                            asyncio.get_event_loop().time()
-                                                        ),
-                                                        "model": model,
-                                                        "choices": [
-                                                            {
-                                                                "index": 0,
-                                                                "delta": {},
-                                                                "finish_reason": "tool_calls",
-                                                            }
-                                                        ],
-                                                    }
-                                                    yield f"data: {json.dumps(final_chunk)}\n\n"
-                                                    yield "data: [DONE]\n\n"
-                                                    return
-
-                                                # Reset state and continue
-                                                in_tool_call = False
-                                                tool_call_buffer = ""
-
-                                        i += 1
-
-                                    # Update chunk with filtered content
-                                    if (
-                                        not in_tool_call
-                                        and filtered_content != content_delta
-                                    ):
-                                        parsed["choices"][0]["delta"][
-                                            "content"
-                                        ] = filtered_content
-                                        modified_chunk = (
-                                            f"data: {json.dumps(parsed)}\n\n"
+                        try:
+                            # Parse the JSON data
+                            data = json.loads(data_part)
+                            
+                            # Check if this chunk contains content
+                            if "choices" in data and len(data["choices"]) > 0:
+                                choice = data["choices"][0]
+                                if "delta" in choice and "content" in choice["delta"]:
+                                    content = choice["delta"]["content"]
+                                    if content:
+                                        # Parse tool calls from content
+                                        cleaned_content, tool_calls = self._parse_tool_calls(
+                                            content
                                         )
+                                        
+                                        # Update the content in the chunk
+                                        choice["delta"]["content"] = cleaned_content
+                                        
+                                        # Add tool calls if present
+                                        if tool_calls:
+                                            choice["delta"]["tool_calls"] = tool_calls
+                                        
+                                        # Re-serialize the chunk
+                                        yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+                                        continue
+                        except (json.JSONDecodeError, KeyError):
+                            # If parsing fails, yield the original chunk
+                            pass
+                
+                yield chunk_str
 
-                            except (json.JSONDecodeError, KeyError, IndexError):
-                                pass
+        except Exception as e:
+            # Handle errors
+            error_data = {
+                "error": {
+                    "message": str(e),
+                    "type": "server_error",
+                }
+            }
+            yield f"data: {json.dumps(error_data, separators=(',', ':'))}\n\n"
+            yield "data: [DONE]\n\n"
 
-                    # Only yield chunk if we're not filtering tool call content
-                    if not in_tool_call or chunk_str.endswith("[DONE]\n\n"):
-                        yield modified_chunk
+    async def _stream_tool_aware_response_legacy(
+        self, model: str, messages: List[fp.ProtocolMessage], api_key: str, request
+    ) -> AsyncGenerator[str, None]:
+        """
+        Legacy streaming response method (kept for reference).
 
-                except UnicodeDecodeError:
-                    yield chunk
+        Args:
+            model: Model name
+            messages: List of Poe protocol messages
+            api_key: Poe API key
+            request: Original request object
 
-        # Final done if not already sent
-        if not in_tool_call:
+        Yields:
+            Server-sent events in OpenAI format
+        """
+        try:
+            from server import generate_poe_bot_response
+            response = await generate_poe_bot_response(model, messages, api_key)
+
+            # Parse tool calls from response
+            content = response.get("content", "")
+            cleaned_content, tool_calls = self._parse_tool_calls(content)
+
+            # Stream the response
+            if cleaned_content:
+                # Stream content chunks
+                chunk_size = 10
+                for i in range(0, len(cleaned_content), chunk_size):
+                    chunk = cleaned_content[i:i + chunk_size]
+                    data = {
+                        "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": chunk},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+                    await asyncio.sleep(0.01)  # Small delay for streaming effect
+
+            # Add tool calls if present
+            if tool_calls:
+                data = {
+                    "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"tool_calls": tool_calls},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+            # Final chunk
+            data = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop" if not tool_calls else "tool_calls",
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            # Handle errors
+            error_data = {
+                "error": {
+                    "message": str(e),
+                    "type": "server_error",
+                }
+            }
+            yield f"data: {json.dumps(error_data, separators=(',', ':'))}\n\n"
             yield "data: [DONE]\n\n"
