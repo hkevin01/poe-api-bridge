@@ -1,82 +1,197 @@
-<div align="center">
-<h1>Poe OpenAI Compatible API (Unofficial) <img src="https://psc2.cf2.poecdn.net/favicon.svg" height="35"></h1>
+# Poe Code Chat Backend
 
-<p><em>Use your Poe.com subscription anywhere</em></p>
-<h2><a href="https://kamilio--poe-api-bridge-poeapibridge-fastapi-app.modal.run" target="_blank">Try it here</a></h2>
-</div>
+Backend service that provides OpenAI-compatible API endpoints using the [poe-api-wrapper](https://github.com/snowby666/poe-api-wrapper) to access GPT-4, Claude, Gemini, and other models for free.
 
+## Features
 
+- ✅ **Free access** to premium models (GPT-4, Claude, Gemini, etc.)
+- ✅ **OpenAI-compatible API** - works with existing VS Code extensions
+- ✅ **Code context awareness** - automatically includes project context
+- ✅ **Streaming responses** - real-time chat experience
+- ✅ **Multiple model support** - Claude, GPT, Gemini, and more
+- ✅ **Easy setup** - simple token configuration
 
-Poe provides a [Python API](https://creator.poe.com/docs/external-application-guide), but it uses a custom format that requires custom providers, making it difficult to integrate into standard applications.
+## Quick Start
 
-This project serves as a wrapper around the Poe API, providing a standard `/chat/completions` endpoint that can be used anywhere.
+### 1. Install Dependencies
 
-Additionally, it provides `/images/generations` and `/images/edits` endpoints that work with any bots capable of returning image attachments, but they also support audio and video bots.
+```bash
+cd backend
+pip install -r requirements-prod.txt
+```
 
-## Endpoints
+### 2. Get Poe Tokens
 
-All bots work in all endpoints, and everything is multimodal. The endpoints differ in their intended user experience:
+You need to get your Poe tokens from [poe.com](https://poe.com/):
 
-### `/chat/completions`
-Provides a traditional **chat experience** where you interact conversationally with the bot. This endpoint is ideal for:
-- Back-and-forth conversations
-- Text-based interactions with multimodal capabilities. Models return URLs
+1. Go to [poe.com](https://poe.com/) and sign in
+2. Open Developer Tools (F12)
+3. Go to **Application** > **Cookies** > **poe.com**
+4. Copy the values for `p-b` and `p-lat` cookies
 
-### `/images/generations` and `/images/edits`
-Provide a **work on file experience** where you submit content for processing or generation. These endpoints are ideal for:
-- Image generation and editing
-- File transformations
-- Audio/video processing
-- Single-request content creation
+### 3. Setup Tokens
 
-Both endpoint types support the same underlying bots and multimodal capabilities - the difference is in how they structure the interaction pattern for different use cases.
+Run the interactive setup script:
 
-## Tool Calling
+```bash
+python setup_tokens.py
+```
 
-Poe has limited support for tools with a non-conventional API requiring users to provide Python executors. Many applications require tool usage, so this project implements "fake" tool calling via prompting and XML parsing. In theory, this approach can work with any bot, even those that don't natively support tool calling. See the specification in [`docs/fake_tool_calling_spec.md`](docs/fake_tool_calling_spec.md) for more details.
+Follow the prompts to enter your tokens.
 
-## Token Counting
+### 4. Start the Server
 
-The bridge reports usage statistics in the standard OpenAI format:
+```bash
+python start.py
+```
+
+The server will be available at:
+- **API**: http://127.0.0.1:8000
+- **Docs**: http://127.0.0.1:8000/docs
+
+### 5. Test the API
+
+```bash
+python test_api.py
+```
+
+## Available Models
+
+| Model | Poe Model | Description |
+|-------|-----------|-------------|
+| `claude-3.5-sonnet` | `claude_3_igloo` | Claude 3.5 Sonnet (latest) |
+| `claude-3-opus` | `claude_2_1_cedar` | Claude 3 Opus |
+| `claude-3-sonnet` | `claude_2_1_bamboo` | Claude 3 Sonnet |
+| `claude-3-haiku` | `claude_3_haiku` | Claude 3 Haiku (fast) |
+| `gpt-4` | `beaver` | GPT-4 |
+| `gpt-4o` | `gpt4_o` | GPT-4o |
+| `gpt-4o-mini` | `gpt4_o_mini` | GPT-4o Mini |
+| `gpt-3.5-turbo` | `chinchilla` | GPT-3.5 Turbo |
+| `gemini-pro` | `gemini_pro` | Gemini Pro |
+| `gemini-1.5-pro` | `gemini_1_5_pro_1m` | Gemini 1.5 Pro |
+
+## API Endpoints
+
+### Health Check
+```http
+GET /health
+```
+
+### List Models
+```http
+GET /v1/models
+```
+
+### Chat Completions
+```http
+POST /v1/chat/completions
+```
+
+**Request Body:**
 ```json
 {
-  "usage": {
-    "prompt_tokens": 42,
-    "completion_tokens": 128,
-    "total_tokens": 170
-  }
+  "model": "claude-3-haiku",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful coding assistant."
+    },
+    {
+      "role": "user",
+      "content": "Hello! Can you help me with my code?"
+    }
+  ],
+  "temperature": 0.7,
+  "max_tokens": 1000,
+  "stream": false
 }
 ```
 
-Take the token counting with a grain of salt - it uses tiktoken to count tokens. Poe doesn't report these numbers, so the counts might differ from actual tokens, especially on non-OpenAI models. For some models like image gen, the numbers won't make sense at all. 
-
-## Supported Applications
-
-I've tested Roo Code, Cline, and various other tools - they work reliably. Feel free to create an issue if something is broken.
-
-# Future work
-- Anthropic API - similar to https://github.com/1rgs/claude-code-proxy. It would be nice to use Claude Code with Poe. 
-- Audio API, maybe elevenlabs compat. LLMs are having hard time understanding that `images/generations` endpoint returns audio/video.
-- Native Tool Calling, as soon as Poe supports it.
-- Embeddings `openai.embeddings.create` would be nice
-- OpenAI responses API https://platform.openai.com/docs/api-reference/responses
-- MCP Client
-
-# Development
-
-## Server
-Start in dev mode (with auto-reload)
-```
-make start-dev
+### Image Generation (Coming Soon)
+```http
+POST /v1/images/generations
 ```
 
-Start in production mode
-```
-make start
+## Environment Variables
+
+Create a `.env` file in the backend directory:
+
+```env
+# Required Poe tokens
+POE_P_B_TOKEN=your_p_b_token_here
+POE_P_LAT_TOKEN=your_p_lat_token_here
+
+# Optional tokens for enhanced functionality
+POE_FORMKEY=your_formkey_here
+POE_CF_BM=your_cf_bm_token_here
+POE_CF_CLEARANCE=your_cf_clearance_token_here
 ```
 
-## Testing
-Run automated tests
+## VS Code Extension Integration
+
+Your VS Code extension can use this backend by pointing to the local API:
+
+```typescript
+const response = await fetch('http://127.0.0.1:8000/v1/chat/completions', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    model: 'claude-3-haiku',
+    messages: [
+      { role: 'system', content: systemContext },
+      { role: 'user', content: userMessage }
+    ]
+  })
+});
 ```
-make test
+
+## Troubleshooting
+
+### "poe-api-wrapper not installed"
+```bash
+pip install poe-api-wrapper==1.6.0
 ```
+
+### "Required Poe tokens not found"
+Run the setup script:
+```bash
+python setup_tokens.py
+```
+
+### "Poe client not initialized"
+Check that your tokens are valid and the `.env` file exists.
+
+### Connection errors
+Make sure the server is running:
+```bash
+python start.py
+```
+
+## Development
+
+### Running with Auto-reload
+```bash
+python start.py
+```
+
+### Testing
+```bash
+python test_api.py
+```
+
+### Manual Server Start
+```bash
+python server.py
+```
+
+## Credits
+
+- [poe-api-wrapper](https://github.com/snowby666/poe-api-wrapper) - Python wrapper for Poe.com
+- [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
+- [Poe.com](https://poe.com/) - AI chat platform
+
+## License
+
+This project is licensed under the same license as your VS Code extension.

@@ -1,4 +1,6 @@
-fastapi==0.115.6
-fastapi-poe==0.0.64
-tiktoken==0.6.0
-python-multipart==0.0.20
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+poe-api-wrapper==1.7.0
+python-multipart==0.0.6
+python-dotenv==1.0.0
+pydantic==2.5.0
